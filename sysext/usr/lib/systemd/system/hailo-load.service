@@ -2,11 +2,21 @@
 Description=Hailo-8 PCIe Accelerator Setup
 After=local-fs.target systemd-modules-load.service
 Before=docker.service
+# Cap restart loop on permanent failures (e.g. HAILO_INVALID_DRIVER_VERSION
+# after a TrueNAS update, missing PCIe device). Without these, Restart=on-failure
+# + RestartSec=5s tight-loops insmod every 5 seconds forever and floods the
+# journal. With burst=3/interval=60s the unit lands in `failed` after ~15s.
+StartLimitBurst=3
+StartLimitIntervalSec=60
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c '/sbin/insmod /usr/lib/modules/$(uname -r)/extra/hailo_pci.ko'
+# Skip insmod when the PREINIT script has already loaded the module — but
+# still surface a real insmod failure (e.g. version mismatch) when the
+# module isn't loaded. Don't use `ExecStart=-` here: that would swallow
+# every failure including legitimate ones.
+ExecStart=/bin/bash -c '[ -e /sys/module/hailo_pci ] || /sbin/insmod /usr/lib/modules/$(uname -r)/extra/hailo_pci.ko'
 ExecStart=-/usr/bin/udevadm trigger --subsystem-match=hailo_chardev
 Restart=on-failure
 RestartSec=5s
