@@ -122,6 +122,8 @@ hailo.raw (squashfs, zstd compressed, ~3 MB without firmware)
     │   │   └── extension-release.hailo    # ID=_any
     │   ├── modules/<REAL_KVER>/
     │   │   └── extra/hailo_pci.ko
+    │   ├── hailo/
+    │   │   └── hailo-preinit.sh           # PREINIT script (extracted by install.sh)
     │   ├── x86_64-linux-gnu/
     │   │   ├── libhailort.so → libhailort.so.4.x.x
     │   │   └── libhailort.so.4.x.x
