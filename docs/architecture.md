@@ -149,10 +149,12 @@ The kernel module is placed at `usr/lib/modules/<REAL_KVER>/extra/hailo_pci.ko` 
 The `hailo-load.service` uses `insmod` with an absolute path instead of `modprobe`:
 
 ```ini
-ExecStart=/bin/bash -c '/sbin/insmod /usr/lib/modules/$(uname -r)/extra/hailo_pci.ko'
+ExecStart=/bin/bash -c '[ -e /sys/module/hailo_pci ] || /sbin/insmod /usr/lib/modules/$(uname -r)/extra/hailo_pci.ko'
 ```
 
 This is necessary because `/lib/modules/` is on a read-only ZFS dataset on TrueNAS. `depmod` cannot write module dependency files, so `modprobe` cannot find the module. `insmod` bypasses module dependency resolution entirely, loading the `.ko` directly by path.
+
+The `[ -e /sys/module/hailo_pci ]` guard makes the unit idempotent: the PREINIT script normally loads the module before `multi-user.target`, so by the time this service runs the module is already in the kernel and the insmod is skipped. The unit still acts as a backup if PREINIT registration is broken (e.g., midclt failed during install) — and a real insmod failure (version mismatch, missing device) is still surfaced rather than swallowed by `ExecStart=-`.
 
 ## TrueNAS Sysext Activation
 
