@@ -57,6 +57,14 @@ sudo bash install.sh --pool=fast
 
 ### Verify
 
+Run the built-in status probe:
+
+```bash
+curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh | sudo bash -s -- --check
+```
+
+Or check manually:
+
 ```bash
 ls -la /dev/hailo*                      # Device detected
 lsmod | grep hailo                      # Module loaded

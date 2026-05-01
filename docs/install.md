@@ -30,7 +30,24 @@ sudo bash install.sh /tmp/hailo.raw
 | `--repo=OWNER/NAME` | GitHub repo for releases (default: `scyto/truenas-hailo`). Also settable via `HAILO_REPO` env var. |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
 | `--persist-path=PATH` | Exact path for persistent config directory |
+| `--check` | Probe an existing install (read-only) and report status |
+| `--dry-run` | Validate everything (downloads, checksums, network) without modifying the system |
 | `--help` | Show usage help |
+
+## Probing and Validating
+
+**`--check`** performs a read-only probe of an existing install: device node, kernel module, sysext file/merge state, persistent config + backup, PREINIT script + middleware registration, kernel-version match, and PREINIT boot result. Each failure includes a one-line hint. Exits 1 if any check fails.
+
+```bash
+# Probe an existing install
+sudo ./install.sh --check
+# Or via curl
+curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh | sudo bash -s -- --check
+```
+
+**`--dry-run`** performs every read/network/validation step (release lookup, sha256 verify, firmware download, squashfs unpack/repack) but skips every command that mutates the running system. Each skipped mutation is logged as `[dry-run] would: <command>`.
+
+`--check` and `--dry-run` are mutually exclusive.
 
 ## What the Install Script Does
 
