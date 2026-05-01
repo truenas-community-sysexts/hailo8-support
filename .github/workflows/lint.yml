@@ -1,0 +1,61 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**.sh'
+      - '.github/scripts/**.sh'
+      - '.github/workflows/**.yml'
+      - '.github/tracked-versions.json'
+  pull_request:
+    paths:
+      - 'scripts/**.sh'
+      - '.github/scripts/**.sh'
+      - '.github/workflows/**.yml'
+      - '.github/tracked-versions.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: |
+          shellcheck --severity=warning \
+            scripts/install.sh \
+            scripts/hailo-preinit.sh \
+            scripts/restore.sh \
+            scripts/uninstall.sh \
+            .github/scripts/*.sh
+
+  tracked-versions:
+    name: tracked-versions.json shape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: .github/scripts/validate-tracked-versions.sh
+
+  actionlint:
+    name: actionlint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download actionlint
+        # Pinned download script from upstream. actionlint auto-runs
+        # shellcheck against `run:` blocks when shellcheck is on PATH —
+        # ubuntu-latest preinstalls it — so this also catches issues in
+        # build.yml's inline shell that the standalone shellcheck job
+        # doesn't see.
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+      - name: Run actionlint
+        # Match the standalone shellcheck job's severity (--severity=warning)
+        # so the two lints agree on what counts as a finding. Without this,
+        # actionlint runs shellcheck with default severity (style) and would
+        # flag style/info issues that the project has explicitly excluded.
+        run: ./actionlint -color -shellcheck "shellcheck --severity=warning"
