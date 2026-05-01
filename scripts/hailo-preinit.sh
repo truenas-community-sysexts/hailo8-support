@@ -20,6 +20,17 @@ log() {
     logger -t hailo-preinit "$*" 2>/dev/null || true
 }
 
+USR_WAS_WRITABLE=0
+USR_DATASET=""
+
+restore_usr_readonly() {
+    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
+        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
+        USR_WAS_WRITABLE=0
+    fi
+}
+trap restore_usr_readonly EXIT INT TERM
+
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
 for d in /mnt/*/.config/hailo; do
@@ -51,7 +62,9 @@ NEED_COPY=true
 if [ -f "$SYSEXT_TARGET" ]; then
     INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
     BACKUP_SUM=$(sha256sum "$HAILO_RAW_BACKUP" | awk '{print $1}')
-    if [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
+    if [ -z "$INSTALLED_SUM" ] || [ -z "$BACKUP_SUM" ]; then
+        log "WARNING: failed to read sha256 (installed='${INSTALLED_SUM}', backup='${BACKUP_SUM}'); reinstalling defensively"
+    elif [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
         log "hailo.raw already matches backup, skipping copy"
         NEED_COPY=false
     else
@@ -70,17 +83,18 @@ if [ "$NEED_COPY" = true ]; then
     USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
     if [ -n "$USR_DATASET" ]; then
         zfs set readonly=off "$USR_DATASET"
+        USR_WAS_WRITABLE=1
     fi
 
     log "Copying hailo.raw from backup..."
     if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
         log "ERROR: Failed to copy hailo.raw from backup"
-        [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
         exit 1
     fi
 
     if [ -n "$USR_DATASET" ]; then
         zfs set readonly=on "$USR_DATASET"
+        USR_WAS_WRITABLE=0
     fi
 fi
 
@@ -92,16 +106,25 @@ systemd-sysext refresh
 ldconfig
 
 # --- Check kernel version matches the module in the sysext ---
-HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
+running_kver=$(uname -r)
+HAILO_KO="/usr/lib/modules/${running_kver}/extra/hailo_pci.ko"
 if [ -f "$HAILO_KO" ]; then
     log "Loading Hailo module..."
     insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
 else
-    # Module path doesn't match running kernel — likely a TrueNAS update changed the kernel
-    SYSEXT_KVER=$(ls /usr/lib/modules/ 2>/dev/null | grep -v "$(uname -r)" | head -1)
+    SYSEXT_KVER=""
+    for d in /usr/lib/modules/*/; do
+        [ -d "$d" ] || continue
+        name=${d%/}
+        name=${name##*/}
+        if [ "$name" != "$running_kver" ]; then
+            SYSEXT_KVER="$name"
+            break
+        fi
+    done
     if [ -n "$SYSEXT_KVER" ]; then
-        log "ERROR: Kernel version mismatch — running $(uname -r) but sysext has module for ${SYSEXT_KVER}"
-        log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching $(uname -r)"
+        log "ERROR: Kernel version mismatch — running ${running_kver} but sysext has module for ${SYSEXT_KVER}"
+        log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching ${running_kver}"
         log "ERROR: Visit https://github.com/${HAILO_REPO}/releases"
     else
         log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"

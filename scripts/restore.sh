@@ -6,12 +6,22 @@ set -euo pipefail
 
 SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
 HAILO_RAW="${SYSEXT_DIR}/hailo.raw"
-HAILO_BAK="${SYSEXT_DIR}/hailo.raw.bak"
+
+USR_WAS_WRITABLE=0
+USR_DATASET=""
+
+restore_usr_readonly() {
+    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
+        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
+        USR_WAS_WRITABLE=0
+    fi
+}
+trap restore_usr_readonly EXIT INT TERM
 
 echo "=== Removing Hailo-8 sysext ==="
 
 # Unload module if present
-if lsmod | grep -q hailo_pci; then
+if lsmod 2>/dev/null | awk '{print $1}' | grep -qx hailo_pci; then
     echo "Unloading hailo_pci module..."
     rmmod hailo_pci || echo "WARNING: Failed to unload hailo_pci"
 fi
@@ -28,13 +38,15 @@ systemd-sysext unmerge 2>/dev/null || true
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr (are you running as root?)"; exit 1; }
 [ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
 zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
+USR_WAS_WRITABLE=1
 
-# Remove hailo.raw and any backup
+# Remove hailo.raw
 echo "Removing hailo.raw..."
-rm -f "${HAILO_RAW}" "${HAILO_BAK}"
+rm -f "${HAILO_RAW}"
 
 # Restore read-only
-zfs set readonly=on "${USR_DATASET}" || echo "WARNING: Failed to restore ${USR_DATASET} to read-only"
+zfs set readonly=on "${USR_DATASET}"
+USR_WAS_WRITABLE=0
 
 echo ""
 echo "=== Restore complete ==="
@@ -42,9 +54,6 @@ echo "=== Restore complete ==="
 # --- Clean up persistence ---
 echo ""
 echo "=== Cleaning up persistence ==="
-
-# Disable hailo-load service
-systemctl disable hailo-load.service 2>/dev/null || true
 
 # Deregister init script (preinit or legacy postinit)
 INIT_ID=$(midclt call initshutdownscript.query 2>/dev/null \
