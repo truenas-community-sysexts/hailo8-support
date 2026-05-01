@@ -77,7 +77,8 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 /mnt/<pool>/.config/hailo/
 ├── hailo.raw                ← Sysext backup (includes firmware)
 ├── .hailo-driver-version    ← HailoRT version (informational)
-└── hailo-preinit.sh         ← Boot script (registered as PREINIT)
+├── .hailo-repo              ← Source GitHub repo (used by preinit for error messages)
+└── hailo-preinit.sh         ← Boot script (extracted from hailo.raw, registered as PREINIT)
 ```
 
 ### Pool Selection
@@ -97,4 +98,4 @@ The PREINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`,
 | `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
 | `scripts/uninstall.sh` | Discoverable alias — downloads and runs `restore.sh` |
 | `scripts/restore.sh` | Uninstalls sysext, deregisters init script, cleans up persistent storage |
-| `scripts/hailo-preinit.sh` | Boot-time script — activates sysext before apps start (also embedded in install.sh) |
+| `scripts/hailo-preinit.sh` | Boot-time script — activates sysext before apps start (bundled inside hailo.raw at `/usr/lib/hailo/`) |

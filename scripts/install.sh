@@ -303,7 +303,7 @@ cleanup() {
         zfs set readonly=on "${USR_DATASET}" 2>/dev/null || true
         USR_WAS_WRITABLE=0
     fi
-    rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256 /tmp/hailo8_fw.bin
+    rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256 /tmp/hailo8_fw.bin /tmp/hailo-preinit.sh
     rm -rf /tmp/hailo-sysext-unpack
 }
 trap cleanup EXIT INT TERM
@@ -394,13 +394,15 @@ echo ""
 echo "=== Downloading Hailo-8 firmware ==="
 
 # Fetch tracked-versions.json once and reuse for both HAILO_VERSION fallback
-# and firmware-sha256 verification. Two fetches in close succession would open
-# a small TOCTOU window where a push between them could leave version and
-# sha256 inconsistent.
+# and firmware-sha256 verification below. Two fetches in close succession
+# would open a small TOCTOU window where a push between them could leave
+# version and sha256 inconsistent.
 TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
     "https://raw.githubusercontent.com/${REPO}/main/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
 
-# Determine HailoRT version from release tag or tracked-versions.json
+# Determine HailoRT version from release tag or the repo's tracked-versions
+# state file. The release tag is the primary source (format v<truenas>-hailo<driver>);
+# the JSON fallback handles tag-format drift.
 HAILO_VERSION=""
 if [ -n "${RELEASE_TAG:-}" ]; then
     # Extract version from tag like v25.10.2.1-hailo4.20.0
@@ -440,11 +442,27 @@ echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
 # --- Inject firmware into hailo.raw squashfs ---
 echo "Injecting firmware into hailo.raw..."
 if command -v unsquashfs &>/dev/null && command -v mksquashfs &>/dev/null; then
+    # The cleanup trap normally clears this, but a SIGKILL'd or panic'd
+    # prior run can leave it behind — unsquashfs -d refuses to overwrite.
     rm -rf /tmp/hailo-sysext-unpack
     unsquashfs -d /tmp/hailo-sysext-unpack /tmp/hailo.raw
     mkdir -p /tmp/hailo-sysext-unpack/usr/lib/firmware/hailo
     cp /tmp/hailo8_fw.bin /tmp/hailo-sysext-unpack/usr/lib/firmware/hailo/hailo8_fw.bin
-    mksquashfs /tmp/hailo-sysext-unpack /tmp/hailo.raw -noappend -comp zstd
+    # Pull the PREINIT script out of the unpacked sysext while we have it
+    # mounted. We need it later (~PERSIST_DIR setup), but the sysext is the
+    # source of truth — whatever hailo.raw the user installs ships with the
+    # matching preinit. Older releases (pre-bundling) won't have it; refuse
+    # rather than silently ship without persistence.
+    BUNDLED_PREINIT="/tmp/hailo-sysext-unpack/usr/lib/hailo/hailo-preinit.sh"
+    if [ ! -f "$BUNDLED_PREINIT" ]; then
+        echo "ERROR: hailo-preinit.sh not found in sysext at /usr/lib/hailo/hailo-preinit.sh" >&2
+        echo "  This hailo.raw was built before the preinit script was bundled in." >&2
+        echo "  Re-fetch a current release: https://github.com/${REPO}/releases/latest" >&2
+        exit 1
+    fi
+    cp "$BUNDLED_PREINIT" /tmp/hailo-preinit.sh
+    chmod +x /tmp/hailo-preinit.sh
+    mksquashfs /tmp/hailo-sysext-unpack /tmp/hailo.raw -noappend -comp zstd -all-root
     rm -rf /tmp/hailo-sysext-unpack
     echo "Firmware injected into hailo.raw"
 else
@@ -584,163 +602,18 @@ else
     echo -n "$REPO" > "${PERSIST_DIR}/.hailo-repo"
 fi
 
-# --- Write PREINIT script to persistent storage ---
-# NOTE: This is an inline copy of scripts/hailo-preinit.sh.
-# Keep both copies in sync when making changes.
-echo "Writing PREINIT script..."
+# --- Install PREINIT script to persistent storage ---
+# Source is /tmp/hailo-preinit.sh, which we extracted from the unsquashed
+# sysext earlier (see "Inject firmware" block). Bundling the script in the
+# sysext means the hailo.raw release artifact is self-contained — whatever
+# .raw the user installs ships with the matching preinit.
+echo "Installing PREINIT script..."
 
 # Clean up old postinit script if present
 if_real rm -f "${PERSIST_DIR}/hailo-postinit.sh"
 
-if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: write PREINIT script to ${PERSIST_DIR}/hailo-preinit.sh"
-else
-cat > "${PERSIST_DIR}/hailo-preinit.sh" <<'PREINIT_EOF'
-#!/usr/bin/env bash
-# TrueNAS PREINIT script: activates hailo.raw sysext on every boot.
-# Runs before middleware starts, so the Hailo device is ready before
-# app containers (e.g., Frigate) launch.
-#
-# Stored on persistent pool; registered via midclt during install.
-# Idempotent — safe to run on every boot.
-#
-# The hailo.raw squashfs contains firmware (injected at install time),
-# so restoring the sysext also restores firmware. No separate firmware
-# handling is needed.
-#
-# NOTE: This script is also embedded inline in install.sh (heredoc).
-# Keep both copies in sync when making changes.
-
-set -uo pipefail
-
-log() {
-    echo "[hailo-preinit] $*"
-    logger -t hailo-preinit "$*" 2>/dev/null || true
-}
-
-USR_WAS_WRITABLE=0
-USR_DATASET=""
-
-restore_usr_readonly() {
-    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-        USR_WAS_WRITABLE=0
-    fi
-}
-trap restore_usr_readonly EXIT INT TERM
-
-# --- Find persistent config via glob ---
-PERSIST_DIR=""
-for d in /mnt/*/.config/hailo; do
-    [ -d "$d" ] && PERSIST_DIR="$d" && break
-done
-
-if [ -z "$PERSIST_DIR" ]; then
-    log "No persistent config found at /mnt/*/.config/hailo/, nothing to do"
-    exit 0
-fi
-
-HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
-SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
-
-# Read which repo this install came from (written by install.sh)
-HAILO_REPO="scyto/truenas-hailo"
-if [ -f "${PERSIST_DIR}/.hailo-repo" ]; then
-    HAILO_REPO=$(cat "${PERSIST_DIR}/.hailo-repo" 2>/dev/null) || HAILO_REPO="scyto/truenas-hailo"
-    [ -z "$HAILO_REPO" ] && HAILO_REPO="scyto/truenas-hailo"
-fi
-
-if [ ! -f "$HAILO_RAW_BACKUP" ]; then
-    log "No hailo.raw backup at ${HAILO_RAW_BACKUP}, nothing to do"
-    exit 0
-fi
-
-# --- Compare checksums and reinstall if needed ---
-NEED_COPY=true
-if [ -f "$SYSEXT_TARGET" ]; then
-    INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
-    BACKUP_SUM=$(sha256sum "$HAILO_RAW_BACKUP" | awk '{print $1}')
-    if [ -z "$INSTALLED_SUM" ] || [ -z "$BACKUP_SUM" ]; then
-        log "WARNING: failed to read sha256 (installed='${INSTALLED_SUM}', backup='${BACKUP_SUM}'); reinstalling defensively"
-    elif [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
-        log "hailo.raw already matches backup, skipping copy"
-        NEED_COPY=false
-    else
-        log "hailo.raw differs from backup (update detected), reinstalling..."
-    fi
-else
-    log "hailo.raw missing, installing from backup..."
-fi
-
-if [ "$NEED_COPY" = true ]; then
-    log "Removing old hailo sysext..."
-    rm -f /run/extensions/hailo.raw
-    systemd-sysext unmerge 2>/dev/null || true
-
-    log "Making /usr writable..."
-    USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
-    if [ -n "$USR_DATASET" ]; then
-        zfs set readonly=off "$USR_DATASET"
-        USR_WAS_WRITABLE=1
-    fi
-
-    log "Copying hailo.raw from backup..."
-    if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
-        log "ERROR: Failed to copy hailo.raw from backup"
-        exit 1
-    fi
-
-    if [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET"
-        USR_WAS_WRITABLE=0
-    fi
-fi
-
-# --- Always activate sysext (symlink is on tmpfs, gone after reboot) ---
-log "Activating hailo sysext..."
-mkdir -p /run/extensions
-ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
-systemd-sysext refresh
-ldconfig
-
-# --- Check kernel version matches the module in the sysext ---
-running_kver=$(uname -r)
-HAILO_KO="/usr/lib/modules/${running_kver}/extra/hailo_pci.ko"
-if [ -f "$HAILO_KO" ]; then
-    log "Loading Hailo module..."
-    insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
-else
-    SYSEXT_KVER=""
-    for d in /usr/lib/modules/*/; do
-        [ -d "$d" ] || continue
-        name=${d%/}
-        name=${name##*/}
-        if [ "$name" != "$running_kver" ]; then
-            SYSEXT_KVER="$name"
-            break
-        fi
-    done
-    if [ -n "$SYSEXT_KVER" ]; then
-        log "ERROR: Kernel version mismatch — running ${running_kver} but sysext has module for ${SYSEXT_KVER}"
-        log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching ${running_kver}"
-        log "ERROR: Visit https://github.com/${HAILO_REPO}/releases"
-    else
-        log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
-    fi
-fi
-
-# --- Reload udev rules from sysext so /dev/hailo0 gets correct permissions ---
-log "Reloading udev rules..."
-udevadm control --reload-rules 2>/dev/null || true
-if [ -e /dev/hailo0 ]; then
-    udevadm trigger /dev/hailo0 2>/dev/null || true
-fi
-
-log "Done"
-exit 0
-PREINIT_EOF
-chmod +x "${PERSIST_DIR}/hailo-preinit.sh"
-fi
+if_real cp /tmp/hailo-preinit.sh "${PERSIST_DIR}/hailo-preinit.sh"
+if_real chmod +x "${PERSIST_DIR}/hailo-preinit.sh"
 
 # --- Register PREINIT script via midclt ---
 PREINIT_SCRIPT="${PERSIST_DIR}/hailo-preinit.sh"
@@ -798,7 +671,6 @@ echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
 echo "  hailo.raw                — sysext backup (includes firmware)"
 echo "  .hailo-driver-version    — HailoRT version (informational)"
-echo "  .hailo-repo              — source repo (for error messages)"
 echo "  hailo-preinit.sh         — runs before apps start (registered as PREINIT)"
 echo ""
 echo "The Hailo-8 driver will survive TrueNAS updates and reboots."
