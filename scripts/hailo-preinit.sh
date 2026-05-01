@@ -34,6 +34,13 @@ fi
 HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
 SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
 
+# Read which repo this install came from (written by install.sh)
+HAILO_REPO="scyto/truenas-hailo"
+if [ -f "${PERSIST_DIR}/.hailo-repo" ]; then
+    HAILO_REPO=$(cat "${PERSIST_DIR}/.hailo-repo" 2>/dev/null) || HAILO_REPO="scyto/truenas-hailo"
+    [ -z "$HAILO_REPO" ] && HAILO_REPO="scyto/truenas-hailo"
+fi
+
 if [ ! -f "$HAILO_RAW_BACKUP" ]; then
     log "No hailo.raw backup at ${HAILO_RAW_BACKUP}, nothing to do"
     exit 0
@@ -95,7 +102,7 @@ else
     if [ -n "$SYSEXT_KVER" ]; then
         log "ERROR: Kernel version mismatch — running $(uname -r) but sysext has module for ${SYSEXT_KVER}"
         log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching $(uname -r)"
-        log "ERROR: Visit https://github.com/scyto/truenas-hailo/releases"
+        log "ERROR: Visit https://github.com/${HAILO_REPO}/releases"
     else
         log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
     fi

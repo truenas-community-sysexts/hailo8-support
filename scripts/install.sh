@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REPO="scyto/truenas-hailo"
+REPO="${HAILO_REPO:-scyto/truenas-hailo}"
 SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
 HAILO_RAW="${SYSEXT_DIR}/hailo.raw"
 
@@ -23,12 +23,14 @@ PERSIST_PATH=""
 
 for arg in "$@"; do
     case "$arg" in
+        --repo=*) REPO="${arg#*=}" ;;
         --pool=*) POOL_NAME="${arg#*=}" ;;
         --persist-path=*) PERSIST_PATH="${arg#*=}" ;;
         --help)
             echo "Usage: sudo ./install.sh [OPTIONS] [path-to-hailo.raw]"
             echo ""
             echo "Options:"
+            echo "  --repo=OWNER/NAME        GitHub repo for releases (default: scyto/truenas-hailo)"
             echo "  --pool=NAME              ZFS pool for persistent config (e.g., fast)"
             echo "  --persist-path=PATH      Exact path for persistent config"
             echo "  --help                   Show this help"
@@ -135,8 +137,10 @@ if [ -z "$HAILO_VERSION" ]; then
     HAILO_VERSION=$(curl -sf "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
 fi
 if [ -z "$HAILO_VERSION" ]; then
-    echo "WARNING: Could not determine HailoRT version, defaulting to 4.20.0"
-    HAILO_VERSION="4.20.0"
+    echo "ERROR: Could not determine HailoRT version from release tag or repo state."
+    echo "  Ensure the release tag matches v<truenas>-hailo<driver> format,"
+    echo "  or that ${REPO} has a .hailo-driver-version file on the main branch."
+    exit 1
 fi
 
 echo "HailoRT version: ${HAILO_VERSION}"
@@ -267,6 +271,9 @@ cp /tmp/hailo.raw "${PERSIST_DIR}/hailo.raw"
 # Save HailoRT version for reference
 echo -n "$HAILO_VERSION" > "${PERSIST_DIR}/.hailo-driver-version"
 
+# Record which repo this install came from so hailo-preinit.sh can reference it
+echo -n "$REPO" > "${PERSIST_DIR}/.hailo-repo"
+
 # --- Write PREINIT script to persistent storage ---
 # NOTE: This is an inline copy of scripts/hailo-preinit.sh.
 # Keep both copies in sync when making changes.
@@ -308,6 +315,13 @@ fi
 
 HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
 SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
+
+# Read which repo this install came from (written by install.sh)
+HAILO_REPO="scyto/truenas-hailo"
+if [ -f "${PERSIST_DIR}/.hailo-repo" ]; then
+    HAILO_REPO=$(cat "${PERSIST_DIR}/.hailo-repo" 2>/dev/null) || HAILO_REPO="scyto/truenas-hailo"
+    [ -z "$HAILO_REPO" ] && HAILO_REPO="scyto/truenas-hailo"
+fi
 
 if [ ! -f "$HAILO_RAW_BACKUP" ]; then
     log "No hailo.raw backup at ${HAILO_RAW_BACKUP}, nothing to do"
@@ -370,7 +384,7 @@ else
     if [ -n "$SYSEXT_KVER" ]; then
         log "ERROR: Kernel version mismatch — running $(uname -r) but sysext has module for ${SYSEXT_KVER}"
         log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching $(uname -r)"
-        log "ERROR: Visit https://github.com/scyto/truenas-hailo/releases"
+        log "ERROR: Visit https://github.com/${HAILO_REPO}/releases"
     else
         log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
     fi
@@ -423,6 +437,7 @@ echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
 echo "  hailo.raw                — sysext backup (includes firmware)"
 echo "  .hailo-driver-version    — HailoRT version (informational)"
+echo "  .hailo-repo              — source repo (for error messages)"
 echo "  hailo-preinit.sh         — runs before apps start (registered as PREINIT)"
 echo ""
 echo "The Hailo-8 driver will survive TrueNAS updates and reboots."
