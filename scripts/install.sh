@@ -23,9 +23,18 @@ PERSIST_PATH=""
 
 for arg in "$@"; do
     case "$arg" in
-        --repo=*) REPO="${arg#*=}" ;;
-        --pool=*) POOL_NAME="${arg#*=}" ;;
-        --persist-path=*) PERSIST_PATH="${arg#*=}" ;;
+        --repo=*)
+            REPO="${arg#*=}"
+            [ -n "$REPO" ] || { echo "ERROR: --repo= requires a non-empty value (e.g., --repo=owner/name)" >&2; exit 2; }
+            ;;
+        --pool=*)
+            POOL_NAME="${arg#*=}"
+            [ -n "$POOL_NAME" ] || { echo "ERROR: --pool= requires a non-empty value" >&2; exit 2; }
+            ;;
+        --persist-path=*)
+            PERSIST_PATH="${arg#*=}"
+            [ -n "$PERSIST_PATH" ] || { echo "ERROR: --persist-path= requires a non-empty value" >&2; exit 2; }
+            ;;
         --help)
             echo "Usage: sudo ./install.sh [OPTIONS] [path-to-hailo.raw]"
             echo ""
@@ -37,19 +46,33 @@ for arg in "$@"; do
             echo ""
             echo "Examples:"
             echo "  sudo ./install.sh --pool=fast"
-            echo "  sudo ./install.sh /tmp/hailo.raw"
+            echo "  sudo ./install.sh /tmp/hailo-input.raw"
             echo "  curl -fsSL <url>/install.sh | sudo bash"
             exit 0
             ;;
         *)
             if [ -f "$arg" ]; then
                 LOCAL_RAW="$arg"
+            elif [[ "$arg" == -* ]]; then
+                echo "ERROR: unknown option: $arg (see --help)" >&2
+                exit 2
+            else
+                echo "ERROR: positional argument is not an existing file: $arg" >&2
+                echo "  Pass --help for usage." >&2
+                exit 2
             fi
             ;;
     esac
 done
 
+USR_WAS_WRITABLE=0
+USR_DATASET=""
+
 cleanup() {
+    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "${USR_DATASET}" ]; then
+        zfs set readonly=on "${USR_DATASET}" 2>/dev/null || true
+        USR_WAS_WRITABLE=0
+    fi
     rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256 /tmp/hailo8_fw.bin
     rm -rf /tmp/hailo-sysext-unpack
 }
@@ -57,6 +80,13 @@ trap cleanup EXIT INT TERM
 
 # If a local path is provided, use it; otherwise download from GitHub releases
 if [ -n "$LOCAL_RAW" ]; then
+    LOCAL_REAL=$(realpath "$LOCAL_RAW" 2>/dev/null || echo "$LOCAL_RAW")
+    STAGE_REAL=$(realpath -m /tmp/hailo.raw 2>/dev/null || echo /tmp/hailo.raw)
+    if [ "$LOCAL_REAL" = "$STAGE_REAL" ]; then
+        echo "ERROR: input file is at /tmp/hailo.raw, which collides with the installer's staging path." >&2
+        echo "  Move or copy it to a different path (e.g. /tmp/hailo-input.raw) and re-run." >&2
+        exit 2
+    fi
     echo "Using local hailo.raw: $LOCAL_RAW"
     cp "$LOCAL_RAW" /tmp/hailo.raw
 else
@@ -74,13 +104,14 @@ except Exception as e:
 
     # Find matching release
     echo "Searching for matching release..."
-    RELEASE_TAG=$(curl -sf "https://api.github.com/repos/${REPO}/releases" \
+    RELEASE_TAG=$(curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
         | python3 -c "
 import sys, json
 try:
     releases = json.load(sys.stdin)
     version = '${VERSION}'
-    matches = [r for r in releases if version in r['tag_name']]
+    prefix = f'v{version}-'
+    matches = [r for r in releases if r.get('tag_name', '').startswith(prefix)]
     if not matches:
         print('', end='')
     else:
@@ -93,7 +124,7 @@ except Exception as e:
     if [ -z "$RELEASE_TAG" ]; then
         echo "ERROR: No release found for TrueNAS version ${VERSION}"
         echo "Available releases:"
-        curl -sf "https://api.github.com/repos/${REPO}/releases" \
+        curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
             | python3 -c "import sys,json; [print(f'  {r[\"tag_name\"]}') for r in json.load(sys.stdin)]"
         exit 1
     fi
@@ -103,8 +134,8 @@ except Exception as e:
     # Download hailo.raw and checksum
     BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
     echo "Downloading hailo.raw..."
-    curl -fSL "${BASE_URL}/hailo.raw" -o /tmp/hailo.raw || { echo "ERROR: Failed to download hailo.raw"; exit 1; }
-    curl -fSL "${BASE_URL}/hailo.raw.sha256" -o /tmp/hailo.raw.sha256 || { echo "ERROR: Failed to download checksum"; exit 1; }
+    curl -fSL --max-time 600 "${BASE_URL}/hailo.raw" -o /tmp/hailo.raw || { echo "ERROR: Failed to download hailo.raw"; exit 1; }
+    curl -fSL --max-time 600 "${BASE_URL}/hailo.raw.sha256" -o /tmp/hailo.raw.sha256 || { echo "ERROR: Failed to download checksum"; exit 1; }
 
     # Validate downloads are non-empty
     [ -s /tmp/hailo.raw ] || { echo "ERROR: hailo.raw is empty"; exit 1; }
@@ -126,15 +157,26 @@ fi
 echo ""
 echo "=== Downloading Hailo-8 firmware ==="
 
-# Determine HailoRT version from release tag or .hailo-driver-version
+# Fetch tracked-versions.json once and reuse for both HAILO_VERSION fallback
+# and firmware-sha256 verification. Two fetches in close succession would open
+# a small TOCTOU window where a push between them could leave version and
+# sha256 inconsistent.
+TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
+    "https://raw.githubusercontent.com/${REPO}/main/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
+
+# Determine HailoRT version from release tag or tracked-versions.json
 HAILO_VERSION=""
 if [ -n "${RELEASE_TAG:-}" ]; then
     # Extract version from tag like v25.10.2.1-hailo4.20.0
     HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9.]*\)$/\1/p')
 fi
+if [ -z "$HAILO_VERSION" ] && [ -n "$TRACKED_VERSIONS_JSON" ]; then
+    HAILO_VERSION=$(printf '%s' "$TRACKED_VERSIONS_JSON" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['hailo']['driver'])" 2>/dev/null) || true
+fi
 if [ -z "$HAILO_VERSION" ]; then
-    # Fallback: try to read from the repo's .hailo-driver-version
-    HAILO_VERSION=$(curl -sf "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
+    # Last-resort fallback: try to read from the repo's .hailo-driver-version
+    HAILO_VERSION=$(curl -sf --max-time 30 "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
 fi
 if [ -z "$HAILO_VERSION" ]; then
     echo "ERROR: Could not determine HailoRT version from release tag or repo state."
@@ -147,7 +189,7 @@ echo "HailoRT version: ${HAILO_VERSION}"
 FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VERSION}/FW/hailo8_fw.${HAILO_VERSION}.bin"
 
 echo "Downloading firmware from Hailo..."
-if ! curl -fSL "$FW_URL" -o /tmp/hailo8_fw.bin; then
+if ! curl -fSL --max-time 600 "$FW_URL" -o /tmp/hailo8_fw.bin; then
     echo "ERROR: Failed to download firmware from ${FW_URL}"
     echo "  Cannot install sysext without firmware — aborting."
     exit 1
@@ -187,6 +229,7 @@ USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to 
 [ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
 echo "Setting ${USR_DATASET} to writable..."
 zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
+USR_WAS_WRITABLE=1
 
 # Install new hailo.raw (backup is on persistent pool, no need for .bak)
 echo "Installing new hailo.raw..."
@@ -194,6 +237,7 @@ cp /tmp/hailo.raw "${HAILO_RAW}"
 
 # Restore read-only
 zfs set readonly=on "${USR_DATASET}"
+USR_WAS_WRITABLE=0
 
 # Activate sysext via symlink + refresh (TrueNAS middleware pattern)
 echo "Activating hailo sysext..."
@@ -228,7 +272,7 @@ if [ -e /dev/hailo0 ]; then
     echo "Device /dev/hailo0 detected!"
     if command -v hailortcli &>/dev/null; then
         echo "Firmware identification:"
-        hailortcli fw-control --identify 2>/dev/null || echo "(device query failed — may need reboot)"
+        hailortcli fw-control identify 2>/dev/null || echo "(device query failed — may need reboot)"
     fi
 else
     echo "Device /dev/hailo0 not found."
@@ -255,9 +299,12 @@ else
         PERSIST_DIR="/mnt/${POOL_NAME}/.config/hailo"
         echo "Auto-detected pool: ${POOL_NAME}"
     else
-        echo "WARNING: No ZFS pool found (excluding boot-pool). Skipping persistence setup."
-        echo "  Re-run with --pool=<name> or --persist-path=<path> to enable persistence."
-        exit 0
+        echo "ERROR: No ZFS pool found (excluding boot-pool). Cannot set up persistence." >&2
+        echo "  The sysext is loaded for this session but will NOT survive a reboot." >&2
+        echo "  Re-run with one of:" >&2
+        echo "    sudo ./install.sh --pool=<name>" >&2
+        echo "    sudo ./install.sh --persist-path=/mnt/<pool>/<path>" >&2
+        exit 1
     fi
 fi
 
@@ -302,6 +349,17 @@ log() {
     logger -t hailo-preinit "$*" 2>/dev/null || true
 }
 
+USR_WAS_WRITABLE=0
+USR_DATASET=""
+
+restore_usr_readonly() {
+    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
+        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
+        USR_WAS_WRITABLE=0
+    fi
+}
+trap restore_usr_readonly EXIT INT TERM
+
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
 for d in /mnt/*/.config/hailo; do
@@ -333,7 +391,9 @@ NEED_COPY=true
 if [ -f "$SYSEXT_TARGET" ]; then
     INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
     BACKUP_SUM=$(sha256sum "$HAILO_RAW_BACKUP" | awk '{print $1}')
-    if [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
+    if [ -z "$INSTALLED_SUM" ] || [ -z "$BACKUP_SUM" ]; then
+        log "WARNING: failed to read sha256 (installed='${INSTALLED_SUM}', backup='${BACKUP_SUM}'); reinstalling defensively"
+    elif [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
         log "hailo.raw already matches backup, skipping copy"
         NEED_COPY=false
     else
@@ -352,17 +412,18 @@ if [ "$NEED_COPY" = true ]; then
     USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
     if [ -n "$USR_DATASET" ]; then
         zfs set readonly=off "$USR_DATASET"
+        USR_WAS_WRITABLE=1
     fi
 
     log "Copying hailo.raw from backup..."
     if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
         log "ERROR: Failed to copy hailo.raw from backup"
-        [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
         exit 1
     fi
 
     if [ -n "$USR_DATASET" ]; then
         zfs set readonly=on "$USR_DATASET"
+        USR_WAS_WRITABLE=0
     fi
 fi
 
@@ -374,16 +435,25 @@ systemd-sysext refresh
 ldconfig
 
 # --- Check kernel version matches the module in the sysext ---
-HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
+running_kver=$(uname -r)
+HAILO_KO="/usr/lib/modules/${running_kver}/extra/hailo_pci.ko"
 if [ -f "$HAILO_KO" ]; then
     log "Loading Hailo module..."
     insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
 else
-    # Module path doesn't match running kernel — likely a TrueNAS update changed the kernel
-    SYSEXT_KVER=$(ls /usr/lib/modules/ 2>/dev/null | grep -v "$(uname -r)" | head -1)
+    SYSEXT_KVER=""
+    for d in /usr/lib/modules/*/; do
+        [ -d "$d" ] || continue
+        name=${d%/}
+        name=${name##*/}
+        if [ "$name" != "$running_kver" ]; then
+            SYSEXT_KVER="$name"
+            break
+        fi
+    done
     if [ -n "$SYSEXT_KVER" ]; then
-        log "ERROR: Kernel version mismatch — running $(uname -r) but sysext has module for ${SYSEXT_KVER}"
-        log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching $(uname -r)"
+        log "ERROR: Kernel version mismatch — running ${running_kver} but sysext has module for ${SYSEXT_KVER}"
+        log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching ${running_kver}"
         log "ERROR: Visit https://github.com/${HAILO_REPO}/releases"
     else
         log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
@@ -406,6 +476,20 @@ chmod +x "${PERSIST_DIR}/hailo-preinit.sh"
 PREINIT_SCRIPT="${PERSIST_DIR}/hailo-preinit.sh"
 echo "Registering PREINIT script..."
 
+# Build the payload via python3 -> json.dumps so PREINIT_SCRIPT is escaped
+# correctly even if the path ever grows characters that are special to JSON.
+PREINIT_PAYLOAD=$(PREINIT_SCRIPT="$PREINIT_SCRIPT" python3 -c '
+import json, os
+print(json.dumps({
+    "type": "COMMAND",
+    "command": os.environ["PREINIT_SCRIPT"],
+    "when": "PREINIT",
+    "enabled": True,
+    "timeout": 30,
+    "comment": "Activate Hailo-8 sysext before apps start",
+}))
+')
+
 # Find any existing hailo init script (postinit or preinit)
 EXISTING_ID=$(midclt call initshutdownscript.query 2>/dev/null \
     | python3 -c "
@@ -423,11 +507,13 @@ except Exception:
 
 if [ -n "$EXISTING_ID" ]; then
     echo "Hailo init script already registered (id: ${EXISTING_ID}), updating to PREINIT..."
-    midclt call initshutdownscript.update "$EXISTING_ID" "{\"type\": \"COMMAND\", \"command\": \"${PREINIT_SCRIPT}\", \"when\": \"PREINIT\", \"enabled\": true, \"timeout\": 30, \"comment\": \"Activate Hailo-8 sysext before apps start\"}" 2>/dev/null \
-        || echo "WARNING: Failed to update init script"
+    if ! midclt call initshutdownscript.update "$EXISTING_ID" "$PREINIT_PAYLOAD" 2>/dev/null; then
+        echo "WARNING: Failed to update init script"
+    fi
 else
-    midclt call initshutdownscript.create "{\"type\": \"COMMAND\", \"command\": \"${PREINIT_SCRIPT}\", \"when\": \"PREINIT\", \"enabled\": true, \"timeout\": 30, \"comment\": \"Activate Hailo-8 sysext before apps start\"}" 2>/dev/null \
-        || echo "WARNING: Failed to register PREINIT script"
+    if ! midclt call initshutdownscript.create "$PREINIT_PAYLOAD" 2>/dev/null; then
+        echo "WARNING: Failed to register PREINIT script"
+    fi
     echo "PREINIT script registered"
 fi
 
