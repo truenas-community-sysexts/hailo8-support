@@ -2,19 +2,37 @@ name: Build Hailo Sysext
 
 on:
   workflow_dispatch:
+    # Defaults below are kept in sync with .github/tracked-versions.json
+    # and the runner resolved from TrueNAS's published Debian release by
+    # .github/scripts/sync-build-defaults.sh, which the scheduled
+    # check-releases workflow invokes after updating the state file. A
+    # manual dispatch from the Actions UI therefore pre-fills the latest
+    # tracked combination; the user can still override any field.
     inputs:
       truenas_version:
-        description: 'TrueNAS version (e.g., 25.10.2.1)'
+        description: 'TrueNAS version'
         required: true
-        default: '25.10.2.1'
+        default: '25.10.3'
       hailo_driver_version:
-        description: 'HailoRT driver version (e.g., 4.20.0)'
+        description: 'HailoRT driver version'
         required: true
-        default: '4.20.0'
+        default: '4.21.0'
       train_name:
-        description: 'Train name (e.g., Goldeye)'
+        description: 'Train name'
         required: true
         default: 'Goldeye'
+      runner:
+        description: 'GitHub Actions runner image (must have GLIBC ≤ TrueNAS rootfs)'
+        required: true
+        default: 'ubuntu-22.04'
+      mark_latest:
+        description: 'Mark this release as Latest on GitHub'
+        required: false
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: 'true'
 
   workflow_call:
     inputs:
@@ -27,16 +45,27 @@ on:
       train_name:
         type: string
         required: true
+      runner:
+        type: string
+        required: false
+        default: 'ubuntu-22.04'
+      mark_latest:
+        type: string
+        required: false
+        default: 'true'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    # Use ubuntu-22.04 (GLIBC 2.35) so binaries are compatible with
-    # TrueNAS SCALE (Debian Bookworm, GLIBC 2.36). Ubuntu 24.04 has
-    # GLIBC 2.39 which is too new.
-    runs-on: ubuntu-22.04
+    # Runner is resolved from TrueNAS's published Debian release at the
+    # tracked version (see .github/scripts/resolve-runner.sh). The
+    # runner's GLIBC must be ≤ the rootfs's so the kernel module / shared
+    # library we build link cleanly when loaded on TrueNAS. Auto-bump
+    # workflows pass this in; the manual-dispatch default is the runner
+    # for the currently tracked TrueNAS version.
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
 
     steps:
@@ -169,18 +198,22 @@ jobs:
           #   linux-headers-truenas-debug-amd64       (non-versioned, avoid)
           #   linux-headers-6.6.x-production+truenas  (versioned, preferred)
           #   linux-headers-6.6.x-debug+truenas       (versioned, avoid)
+          # We deliberately do NOT fall further back to "any headers
+          # including debug" — if both selectors miss, the rootfs layout
+          # has changed and we want loud failure rather than building
+          # against headers we can't identify.
+          # shellcheck disable=SC2010 # ls|grep is fine: TrueNAS rootfs filenames are package-controlled (no spaces/newlines)
           KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
           if [ -z "$KVER" ]; then
             # Fall back to any non-debug headers
+            # shellcheck disable=SC2010
             KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
-          fi
-          if [ -z "$KVER" ]; then
-            # Last resort: any headers at all (even debug)
-            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
           fi
 
           if [ -z "$KVER" ]; then
-            echo "ERROR: No kernel headers found in rootfs"
+            echo "::error title=kernel-headers::no production or non-debug headers found under /tmp/rootfs/usr/src/. The TrueNAS rootfs layout may have changed; investigate before relaxing the selector."
+            echo "=== Debug: /usr/src contents ==="
+            ls -la /tmp/rootfs/usr/src/ 2>/dev/null || true
             echo "=== Debug: /lib/modules contents ==="
             ls -la /tmp/rootfs/lib/modules/ 2>/dev/null || true
             sudo umount /tmp/iso 2>/dev/null || true
@@ -193,17 +226,33 @@ jobs:
           # The header directory name (e.g. truenas-production-amd64) may differ
           # from the actual kernel release string (e.g. 6.12.33-production+truenas).
           REAL_KVER=""
-          # Method 1: kernel.release in headers
-          if [ -f "/tmp/rootfs/usr/src/linux-headers-${KVER}/include/config/kernel.release" ]; then
-            REAL_KVER=$(cat "/tmp/rootfs/usr/src/linux-headers-${KVER}/include/config/kernel.release" | tr -d '[:space:]')
+          # Method 1: kernel.release in headers (authoritative — this is what
+          # the build system records as the kernel release string).
+          KREL_FILE="/tmp/rootfs/usr/src/linux-headers-${KVER}/include/config/kernel.release"
+          if [ -f "$KREL_FILE" ]; then
+            REAL_KVER=$(tr -d '[:space:]' < "$KREL_FILE")
           fi
-          # Method 2: /lib/modules directory name
+          # Method 2: /lib/modules directory name (fallback when headers are
+          # split across packages and kernel.release isn't co-located).
+          # Mirror the production-preferred / non-debug selector used for
+          # KVER above: a rootfs that ships both kernels would otherwise
+          # let `head -1` pick `*-debug+truenas` (sorts before production)
+          # and we'd ship a sysext under the wrong /lib/modules/<kver>/.
           if [ -z "$REAL_KVER" ]; then
-            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | head -1)
+            # shellcheck disable=SC2010
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -i 'production' | head -1)
           fi
-          # Method 3: fall back to header dir name
           if [ -z "$REAL_KVER" ]; then
-            REAL_KVER="$KVER"
+            # shellcheck disable=SC2010
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -vi 'debug' | head -1)
+          fi
+          # No fallback to $KVER: the header *package* name (e.g.
+          # truenas-production-amd64) is not a kernel release string, and
+          # using it puts modules at the wrong /lib/modules/<kver>/ path.
+          # Better to fail the build than ship a sysext that won't load.
+          if [ -z "$REAL_KVER" ]; then
+            echo "::error title=kernel-version::could not resolve real kernel version. Method 1 (${KREL_FILE}) and Method 2 (/tmp/rootfs/lib/modules/) both returned empty. The TrueNAS rootfs layout may have changed; investigate before bumping the runner or KVER detection." >&2
+            exit 1
           fi
           echo "Real kernel version: ${REAL_KVER}"
 
@@ -214,8 +263,12 @@ jobs:
           # Save real kernel version for later steps
           echo "$REAL_KVER" | sudo tee /tmp/kernel-headers/.real-kver
 
-          # Cleanup
+          # Cleanup: /tmp/rootfs is a loop mount on the fallback path but an
+          # unsquashfs extraction on the primary path. Try umount first (no-op
+          # when it's a plain directory), then rm -rf to cover the extraction
+          # case. /tmp/update-contents is only created on the primary path.
           sudo umount /tmp/rootfs 2>/dev/null || true
+          sudo rm -rf /tmp/rootfs /tmp/update-contents
           sudo umount /tmp/iso 2>/dev/null || true
 
           echo "Kernel headers extracted successfully"
@@ -230,28 +283,37 @@ jobs:
 
       - name: Detect kernel version from cached headers
         run: |
+          # Same selector pattern as the extract step: prefer production,
+          # fall back to non-debug, then fail loud rather than picking up
+          # debug headers (whose package name leaks into the module path
+          # and would ship a sysext we can't identify).
+          # shellcheck disable=SC2010 # ls|grep is fine: TrueNAS package-controlled filenames
           KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
           if [ -z "$KVER" ]; then
+            # shellcheck disable=SC2010
             KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
           fi
           if [ -z "$KVER" ]; then
-            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
-          fi
-          if [ -z "$KVER" ]; then
-            echo "ERROR: No kernel headers found in cache"
+            echo "::error title=kernel-headers::no production or non-debug headers found in cache /tmp/kernel-headers/. Cache may have been populated from a rootfs with a changed layout; bust the kernel-headers cache and re-run."
             ls -la /tmp/kernel-headers/
             exit 1
           fi
           echo "Header package version: ${KVER}"
           echo "KVER=${KVER}" >> "$GITHUB_ENV"
 
-          # Read real kernel version (what uname -r returns on the target)
+          # Read real kernel version (what uname -r returns on the target).
+          # Do NOT fall back to KVER: the header package name (e.g.
+          # truenas-production-amd64) is not a kernel release string, and
+          # using it puts modules at the wrong /lib/modules/<kver>/ path.
+          # A missing .real-kver means the cache is corrupted or pre-dates
+          # the v3 key scheme — fail loud so the operator busts the cache.
           REAL_KVER=""
           if [ -f "/tmp/kernel-headers/.real-kver" ]; then
-            REAL_KVER=$(cat /tmp/kernel-headers/.real-kver | tr -d '[:space:]')
+            REAL_KVER=$(tr -d '[:space:]' < /tmp/kernel-headers/.real-kver)
           fi
           if [ -z "$REAL_KVER" ]; then
-            REAL_KVER="$KVER"
+            echo "::error title=kernel-version::.real-kver missing or empty in cached kernel headers. Bust the kernel-headers cache (key: kernel-headers-v3-${{ inputs.truenas_version }}) and re-run."
+            exit 1
           fi
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
@@ -259,15 +321,14 @@ jobs:
       # ── Build Hailo PCIe kernel module ──
       - name: Clone hailort-drivers
         run: |
+          # The tag was already validated by check-releases.yml against
+          # origin/hailo8 and capped at Frigate's pin. If it's gone now we
+          # want a hard failure — falling back to `hailo8` HEAD would
+          # silently ship a driver newer than Frigate, bypassing the gate
+          # the rest of the pipeline enforces (HailoRT requires exact-match
+          # between kernel module and userspace library).
           git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
-            https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers || {
-            echo "WARNING: Failed to clone tag v${{ inputs.hailo_driver_version }}, trying hailo8 branch"
-            git clone --depth 1 --branch hailo8 \
-              https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers || {
-              echo "ERROR: Failed to clone hailort-drivers from any branch"
-              exit 1
-            }
-          }
+            https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers
           echo "Checked out hailort-drivers:"
           cd /tmp/hailort-drivers && git log --oneline -1
 
@@ -290,20 +351,20 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /tmp/hailort/build
-          key: hailort-build-v2-${{ inputs.hailo_driver_version }}
+          # Runner is part of the key: libhailort.so links against the
+          # runner's GLIBC. Reusing a cache built on a newer runner (e.g.
+          # ubuntu-24.04) on an older one (ubuntu-22.04) would ship a
+          # binary the TrueNAS rootfs can't load.
+          key: hailort-build-v3-${{ inputs.runner }}-${{ inputs.hailo_driver_version }}
 
       - name: Clone hailort
         if: steps.hailort-cache.outputs.cache-hit != 'true'
         run: |
+          # Same reasoning as the hailort-drivers clone above: the tag was
+          # validated upstream; a missing tag at build time is a hard
+          # failure, not a fallback to hailo8 HEAD.
           git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
-            https://github.com/hailo-ai/hailort.git /tmp/hailort || {
-            echo "WARNING: Failed to clone tag v${{ inputs.hailo_driver_version }}, trying hailo8 branch"
-            git clone --depth 1 --branch hailo8 \
-              https://github.com/hailo-ai/hailort.git /tmp/hailort || {
-              echo "ERROR: Failed to clone hailort from any branch"
-              exit 1
-            }
-          }
+            https://github.com/hailo-ai/hailort.git /tmp/hailort
           echo "Checked out hailort:"
           cd /tmp/hailort && git log --oneline -1
 
@@ -315,7 +376,7 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=/usr \
                 ..
-          make -j$(nproc)
+          make -j"$(nproc)"
           echo "=== Built artifacts ==="
           find . -name "libhailort*" -o -name "hailortcli" | head -20
 
@@ -324,7 +385,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/hailort/build
-          key: hailort-build-v2-${{ inputs.hailo_driver_version }}
+          key: hailort-build-v3-${{ inputs.runner }}-${{ inputs.hailo_driver_version }}
 
       # ── Assemble sysext ──
       # NOTE: Firmware (hailo8_fw.bin) is NOT included in the sysext.
@@ -348,44 +409,58 @@ jobs:
           mkdir -p "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
           # Find the actual ELF shared library (not a linker script)
           LIBHAILORT=""
+          # shellcheck disable=SC2044 # for-in-find is fine: cmake build paths under /tmp/hailort/build have no spaces
           for candidate in $(find /tmp/hailort/build -name "libhailort.so*" -not -type l); do
             if file "$candidate" | grep -q "ELF"; then
               LIBHAILORT="$candidate"
               break
             fi
           done
-          if [ -n "$LIBHAILORT" ]; then
-            cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu/"
-            LIBNAME=$(basename "$LIBHAILORT")
-            # Create soname symlinks
-            cd "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
-            if [[ "$LIBNAME" =~ libhailort\.so\..* ]]; then
-              SONAME=$(echo "$LIBNAME" | sed 's/\(libhailort\.so\.[0-9]*\).*/\1/')
-              [ "$SONAME" != "$LIBNAME" ] && ln -sf "$LIBNAME" "$SONAME"
-              ln -sf "$LIBNAME" libhailort.so
-            fi
-            cd -
+          if [ -z "$LIBHAILORT" ]; then
+            # No silent ship: a sysext without libhailort.so is a broken
+            # release — every userspace caller (Frigate, hailortcli) fails
+            # at runtime. Surface the build's actual output so the next
+            # investigator can see what cmake produced.
+            echo "::error title=libhailort::no ELF libhailort.so found under /tmp/hailort/build" >&2
+            echo "Candidates considered:" >&2
+            find /tmp/hailort/build -name "libhailort.so*" -exec file {} \; >&2 || true
+            exit 1
           fi
+          cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu/"
+          LIBNAME=$(basename "$LIBHAILORT")
+          # Create soname symlinks
+          cd "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+          if [[ "$LIBNAME" =~ libhailort\.so\..* ]]; then
+            SONAME=$(echo "$LIBNAME" | sed 's/\(libhailort\.so\.[0-9]*\).*/\1/')
+            [ "$SONAME" != "$LIBNAME" ] && ln -sf "$LIBNAME" "$SONAME"
+            ln -sf "$LIBNAME" libhailort.so
+          fi
+          cd -
 
           # --- HailoRT CLI ---
           # CMake generates a shell wrapper script alongside the real binary.
           # We must find the actual ELF binary, not the wrapper.
           mkdir -p "${SYSEXT_ROOT}/usr/bin"
           HAILORT_CLI=""
+          # shellcheck disable=SC2044
           for candidate in $(find /tmp/hailort/build -name "hailortcli" -type f); do
             if file "$candidate" | grep -q "ELF"; then
               HAILORT_CLI="$candidate"
               break
             fi
           done
-          if [ -n "$HAILORT_CLI" ]; then
-            echo "Found hailortcli ELF binary: $HAILORT_CLI"
-            cp "$HAILORT_CLI" "${SYSEXT_ROOT}/usr/bin/hailortcli"
-            chmod +x "${SYSEXT_ROOT}/usr/bin/hailortcli"
-          else
-            echo "WARNING: No ELF hailortcli binary found, listing candidates:"
-            find /tmp/hailort/build -name "hailortcli" -type f -exec file {} \;
+          if [ -z "$HAILORT_CLI" ]; then
+            # The release notes advertise hailortcli; missing it = silent
+            # regression. Match the libhailort failure mode rather than
+            # warn-and-continue.
+            echo "::error title=hailortcli::no ELF hailortcli binary found under /tmp/hailort/build" >&2
+            echo "Candidates considered:" >&2
+            find /tmp/hailort/build -name "hailortcli" -type f -exec file {} \; >&2 || true
+            exit 1
           fi
+          echo "Found hailortcli ELF binary: $HAILORT_CLI"
+          cp "$HAILORT_CLI" "${SYSEXT_ROOT}/usr/bin/hailortcli"
+          chmod +x "${SYSEXT_ROOT}/usr/bin/hailortcli"
 
           # --- systemd service ---
           mkdir -p "${SYSEXT_ROOT}/usr/lib/systemd/system/multi-user.target.wants"
@@ -414,12 +489,98 @@ jobs:
 
       - name: Create hailo.raw squashfs
         run: |
+          # -all-root: the runner builds the tree as a non-root user, but
+          # the sysext is exec'd as root on the target — own files as root
+          # rather than carrying the runner's uid/gid into the squashfs.
           mksquashfs /tmp/hailo-sysext hailo.raw -noappend -comp zstd -all-root
           echo "=== hailo.raw ==="
           ls -lh hailo.raw
           echo ""
           echo "=== Contents ==="
           unsquashfs -l hailo.raw | head -40
+
+      - name: Smoke-test hailo.raw contents
+        run: |
+          # Open the produced squashfs and verify that the assembly step
+          # actually placed every component the release advertises. The
+          # earlier ELF-on-input check (libhailort/hailortcli during
+          # assembly) confirms the source binaries; this confirms they
+          # made it into the final artifact at the right paths. Catches
+          # silent mksquashfs flag drift, kernel-path drift, missing
+          # preinit bundling, etc.
+          set -e
+          SMOKE_TMP="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_TMP"' EXIT
+
+          unsquashfs -d "${SMOKE_TMP}/extract" hailo.raw
+
+          fail=0
+          require_file() {
+            local rel="$1"
+            local path="${SMOKE_TMP}/extract/${rel}"
+            if [ ! -e "$path" ]; then
+              echo "::error title=smoke-test::missing in hailo.raw: ${rel}"
+              fail=1
+              return
+            fi
+            echo "  ok: ${rel}"
+          }
+          require_elf() {
+            local rel="$1"
+            local path="${SMOKE_TMP}/extract/${rel}"
+            if [ ! -f "$path" ]; then
+              echo "::error title=smoke-test::missing in hailo.raw: ${rel}"
+              fail=1
+              return
+            fi
+            if ! file "$path" | grep -q 'ELF'; then
+              echo "::error title=smoke-test::not an ELF binary: ${rel}"
+              file "$path"
+              fail=1
+              return
+            fi
+            echo "  ok (ELF): ${rel}"
+          }
+
+          echo "=== smoke-test: required paths ==="
+          require_file "usr/lib/extension-release.d/extension-release.hailo"
+          require_file "usr/lib/modules/${REAL_KVER}/extra/hailo_pci.ko"
+          require_elf  "usr/bin/hailortcli"
+          require_file "usr/lib/hailo/hailo-preinit.sh"
+
+          # libhailort.so.* — match the concrete ELF (not the unversioned symlink)
+          LIBHAILORT_REL=$(cd "${SMOKE_TMP}/extract" && \
+            find usr/lib/x86_64-linux-gnu -maxdepth 1 -name 'libhailort.so.*' -not -type l \
+            2>/dev/null | head -1) || true
+          if [ -z "$LIBHAILORT_REL" ]; then
+            echo "::error title=smoke-test::no concrete libhailort.so.* found in hailo.raw"
+            fail=1
+          else
+            require_elf "$LIBHAILORT_REL"
+          fi
+
+          # vermagic sanity: the kernel module's vermagic must reference REAL_KVER.
+          # If we shipped a module built for the wrong kernel, modprobe-style
+          # version checks would refuse to load it. Catch it before publish.
+          KO_PATH="${SMOKE_TMP}/extract/usr/lib/modules/${REAL_KVER}/extra/hailo_pci.ko"
+          if [ -f "$KO_PATH" ]; then
+            VERMAGIC=$(modinfo -F vermagic "$KO_PATH" 2>/dev/null || true)
+            if [ -z "$VERMAGIC" ]; then
+              echo "::error title=smoke-test::could not read vermagic from hailo_pci.ko"
+              fail=1
+            elif ! printf '%s' "$VERMAGIC" | grep -qF "$REAL_KVER"; then
+              echo "::error title=smoke-test::hailo_pci.ko vermagic does not reference REAL_KVER (${REAL_KVER}); got: ${VERMAGIC}"
+              fail=1
+            else
+              echo "  ok: hailo_pci.ko vermagic references ${REAL_KVER}"
+            fi
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error title=smoke-test::hailo.raw is missing required components — refusing to publish"
+            exit 1
+          fi
+          echo "smoke-test OK"
 
       - name: Generate checksums
         run: |
@@ -434,46 +595,82 @@ jobs:
             hailo.raw
             hailo.raw.sha256
 
+      - name: Render release notes
+        env:
+          TRUENAS_VERSION: ${{ inputs.truenas_version }}
+          TRAIN_NAME: ${{ inputs.train_name }}
+          HAILO_DRIVER: ${{ inputs.hailo_driver_version }}
+          RUNNER_IMAGE: ${{ inputs.runner }}
+          BUILD_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The body is regenerated on every dispatch — no template file checked
+          # in. REAL_KVER comes from the kernel-detection step (exported via
+          # GITHUB_ENV); the rest are workflow inputs / runtime metadata. The
+          # body links to the Frigate install_hailort.sh on the dev branch (the
+          # canonical consumer per CLAUDE.md) so the human gating "Set as latest"
+          # can confirm the build matches what Frigate is actually shipping.
+          cat > release-notes.md <<EOF
+          ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
+
+          | Field | Value |
+          | --- | --- |
+          | HailoRT driver | \`${HAILO_DRIVER}\` |
+          | Target kernel | \`${REAL_KVER}\` |
+          | Built on | \`${RUNNER_IMAGE}\` |
+          | Source commit | [\`${BUILD_SHA}\`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
+          | Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: \`${HAILO_DRIVER}\` |
+
+          **Target Device:** Hailo-8 AI Accelerator (PCIe). For Hailo-10/15, see [README](https://github.com/${REPO}#compatibility).
+
+          ### Included Components
+          - \`hailo_pci.ko\` — PCIe kernel module (built against kernel \`${REAL_KVER}\`)
+          - \`libhailort.so\` — HailoRT runtime library
+          - \`hailortcli\` — HailoRT command-line tool
+          - \`hailo-load.service\` — Systemd unit that loads the module on boot
+          - \`hailo-preinit.sh\` — TrueNAS PREINIT script bundled inside the sysext
+          - \`51-hailo-udev.rules\` — Udev rules for \`/dev/hailo*\` permissions
+
+          > **Note:** Hailo-8 firmware (\`hailo8_fw.bin\`) is proprietary and downloaded
+          > directly from Hailo's servers during installation. Not included in this release.
+
+          ### Install
+          \`\`\`bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}/install.sh | sudo bash
+          \`\`\`
+
+          ### Verify
+          \`\`\`bash
+          sudo ./install.sh --check
+          sudo hailortcli fw-control identify
+          \`\`\`
+
+          ### Uninstall
+          \`\`\`bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}/uninstall.sh | sudo bash
+          \`\`\`
+
+          ### Checksums
+          See \`hailo.raw.sha256\`.
+          EOF
+
+          echo "=== Rendered release notes ==="
+          cat release-notes.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.truenas_version }}-hailo${{ inputs.hailo_driver_version }}
           name: "TrueNAS ${{ inputs.truenas_version }} - Hailo ${{ inputs.hailo_driver_version }}"
-          body: |
-            ## Hailo-8 Sysext for TrueNAS SCALE ${{ inputs.truenas_version }} (${{ inputs.train_name }})
-
-            **HailoRT Driver:** ${{ inputs.hailo_driver_version }}
-            **Target Device:** Hailo-8 AI Accelerator (PCIe)
-
-            ### Included Components
-            - `hailo_pci.ko` — PCIe kernel module (compiled for this TrueNAS kernel)
-            - `libhailort.so` — HailoRT runtime library
-            - `hailortcli` — HailoRT command-line tool
-            - `hailo-load.service` — Systemd service for automatic module loading
-            - `51-hailo-udev.rules` — Udev rules for device permissions
-
-            > **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is proprietary and downloaded
-            > directly from Hailo's servers during installation. It is not included in this release.
-
-            ### Install
-            ```bash
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ inputs.truenas_version }}-hailo${{ inputs.hailo_driver_version }}/install.sh | sudo bash
-            ```
-
-            ### Verify
-            ```bash
-            hailortcli fw-control identify
-            ls -la /dev/hailo*
-            ```
-
-            ### Checksums
-            See `hailo.raw.sha256` for verification.
+          body_path: release-notes.md
           files: |
             hailo.raw
             hailo.raw.sha256
             scripts/install.sh
             scripts/restore.sh
+            scripts/uninstall.sh
           draft: false
           prerelease: false
+          make_latest: ${{ inputs.mark_latest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

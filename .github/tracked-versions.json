@@ -1,0 +1,10 @@
+{
+  "truenas": {
+    "version": "25.10.3",
+    "train": "Goldeye"
+  },
+  "hailo": {
+    "driver": "4.21.0",
+    "firmware_sha256": "2a5c94591d9e70d884242e64bf2388b0d2d46b816a335b4c00c3f81a07832635"
+  }
+}
