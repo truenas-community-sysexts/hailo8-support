@@ -396,6 +396,15 @@ jobs:
           mkdir -p "${SYSEXT_ROOT}/usr/lib/udev/rules.d"
           cp sysext/usr/lib/udev/rules.d/51-hailo-udev.rules "${SYSEXT_ROOT}/usr/lib/udev/rules.d/"
 
+          # --- preinit script (bundled for install.sh to extract) ---
+          # The PREINIT script lives in PERSIST_DIR after install — but install.sh
+          # needs a source to copy from. Bundling it inside the sysext makes the
+          # release artifact self-contained: whatever hailo.raw the user installs
+          # ships with the matching preinit script, no separate fetch needed.
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/hailo"
+          cp scripts/hailo-preinit.sh "${SYSEXT_ROOT}/usr/lib/hailo/hailo-preinit.sh"
+          chmod +x "${SYSEXT_ROOT}/usr/lib/hailo/hailo-preinit.sh"
+
           # NOTE: We do NOT run depmod here. Including modules.dep in the sysext
           # would replace the base system's module database via overlayfs, breaking
           # all other modules. Instead, the hailo-load.service uses insmod directly.
@@ -405,7 +414,7 @@ jobs:
 
       - name: Create hailo.raw squashfs
         run: |
-          mksquashfs /tmp/hailo-sysext hailo.raw -noappend -comp zstd
+          mksquashfs /tmp/hailo-sysext hailo.raw -noappend -comp zstd -all-root
           echo "=== hailo.raw ==="
           ls -lh hailo.raw
           echo ""

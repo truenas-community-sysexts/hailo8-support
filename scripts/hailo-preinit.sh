@@ -9,9 +9,7 @@
 # The hailo.raw squashfs contains firmware (injected at install time),
 # so restoring the sysext also restores firmware. No separate firmware
 # handling is needed.
-#
-# NOTE: This script is also embedded inline in install.sh (heredoc).
-# Keep both copies in sync when making changes.
+
 
 set -uo pipefail
 
