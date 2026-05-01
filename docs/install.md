@@ -27,6 +27,7 @@ sudo bash install.sh /tmp/hailo.raw
 
 | Option | Description |
 | --- | --- |
+| `--repo=OWNER/NAME` | GitHub repo for releases (default: `scyto/truenas-hailo`). Also settable via `HAILO_REPO` env var. |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
 | `--persist-path=PATH` | Exact path for persistent config directory |
 | `--help` | Show usage help |
