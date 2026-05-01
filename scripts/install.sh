@@ -413,13 +413,9 @@ if [ -z "$HAILO_VERSION" ] && [ -n "$TRACKED_VERSIONS_JSON" ]; then
         | python3 -c "import sys,json; print(json.load(sys.stdin)['hailo']['driver'])" 2>/dev/null) || true
 fi
 if [ -z "$HAILO_VERSION" ]; then
-    # Last-resort fallback: try to read from the repo's .hailo-driver-version
-    HAILO_VERSION=$(curl -sf --max-time 30 "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
-fi
-if [ -z "$HAILO_VERSION" ]; then
     echo "ERROR: Could not determine HailoRT version from release tag or repo state."
     echo "  Ensure the release tag matches v<truenas>-hailo<driver> format,"
-    echo "  or that ${REPO} has a .hailo-driver-version file on the main branch."
+    echo "  or that ${REPO} has .github/tracked-versions.json on the main branch."
     exit 1
 fi
 

@@ -1,0 +1,33 @@
+# Local AI agent files — instructions, rules, and per-user state that
+# auto-load into an assistant's context. Kept out of the repo so the
+# fork doesn't carry one user's prompts/preferences for everyone else.
+.claude/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.cursor/
+.windsurfrules
+.windsurf/
+.aider*
+.continuerc.json
+.continue/
+.github/copilot-instructions.md
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local build artifacts (this project builds in CI, not locally —
+# but if someone tries a local build, ignore the outputs)
+hailo.raw
+hailo.raw.sha256
+*.ko
+build/
+
+# Plan/spec scratchpads from superpowers planning skills.
+docs/superpowers/

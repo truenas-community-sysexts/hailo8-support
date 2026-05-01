@@ -21,7 +21,7 @@ This means we can skip scale-build entirely, reducing build time from ~5-6 hours
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Single GitHub Actions Job (ubuntu-22.04, ~15-30 min)        │
+│  Single GitHub Actions Job (runner resolved per-build)       │
 │                                                              │
 │  1. Download TrueNAS ISO (cached)                            │
 │  2. Extract kernel headers from nested squashfs (cached)     │
@@ -36,9 +36,19 @@ This means we can skip scale-build entirely, reducing build time from ~5-6 hours
 
 ### Build Environment
 
-The build runs on **ubuntu-22.04** specifically for GLIBC compatibility. TrueNAS SCALE is Debian Bookworm-based (GLIBC 2.36). Ubuntu 24.04 has GLIBC 2.39, which produces binaries that won't run on TrueNAS. Ubuntu 22.04 (GLIBC 2.35) produces forward-compatible binaries.
+The runner image is resolved per-build so it stays compatible with whatever Debian release TrueNAS is on (the runner's GLIBC must be <= the TrueNAS rootfs's). For example, Debian Bookworm (GLIBC 2.36) maps to **ubuntu-22.04** (GLIBC 2.35); Ubuntu 24.04 (GLIBC 2.39) would produce binaries that won't run on a Bookworm-based rootfs. The current mapping table lives in [`.github/scripts/resolve-runner.sh`](../.github/scripts/resolve-runner.sh).
 
 The kernel module is compiled with **gcc-12** because the TrueNAS kernel was built with GCC 12, which uses `-ftrivial-auto-var-init=zero` — a flag not supported by GCC 11 (ubuntu-22.04's default). The userspace components (hailortcli, libhailort) are built with the default GCC 11, which is fine for GLIBC compatibility.
+
+#### Build runner resolution
+
+Both auto-bump check workflows resolve the runner before dispatching `build.yml`, then pass it as an input. The lookup is two cheap fetches against TrueNAS's own published build metadata (no ISO download needed):
+
+1. `download.truenas.com/TrueNAS-SCALE-<train>/<version>/GITMANIFEST` (~2 KB) pins the `truenas-build` commit that produced the ISO.
+2. `raw.githubusercontent.com/truenas/truenas-build/<sha>/conf/build.manifest` declares `debian_release:` (e.g. `"bookworm"`).
+3. A `case` statement in `.github/scripts/resolve-runner.sh` maps the Debian release to an Ubuntu runner image with a compatible GLIBC.
+
+When TrueNAS rebases onto a new Debian release, the auto-bump checks fail loud (`::error::unknown debian_release '<codename>'`) on the first scheduled run after the rebase. The fix is a one-line addition to the `case` statement — detection is automated, the actual mapping decision stays human.
 
 ### Caching Strategy
 
@@ -286,22 +296,25 @@ This is why:
 
 ## Automated Version Monitoring
 
-### TrueNAS Releases (Monday)
+A single daily workflow (`check-releases.yml`, 06:00 UTC) monitors both upstreams and updates `.github/tracked-versions.json`:
 
-Queries `truenas/scale-build` GitHub tags for new `TS-25.10.*` stable releases. When found:
+### TrueNAS half
 
-- Updates the `version` file
-- Auto-triggers the build workflow
+Queries `truenas/scale-build` GitHub tags for the highest stable `TS-*` release. When found:
+
+- Resolves the train name from `download.truenas.com`'s directory listing
+- Gates on the matching ISO actually being published (tags can land hours before the ISO)
+- Updates `truenas.version` and `truenas.train` in `tracked-versions.json`
 
 This is critical because a new TrueNAS release may ship a different kernel, requiring a recompiled `hailo_pci.ko`.
 
-### HailoRT Releases (Wednesday)
+### HailoRT half
 
-Checks `hailo-ai/hailort-drivers` GitHub tags for newer versions. Creates an issue (does not auto-build) because:
-- New driver versions should be tested before deployment
-- The kernel module interface is stable across minor versions
-- Users should opt-in to driver updates
-- the frigate image is usually pinned to a specific version so no point building versions frigate container doesn't support 
+Enumerates tags reachable from `hailort-drivers`'s `hailo8` branch (not `master`, which tracks Hailo-10/15), capped at the version pinned in Frigate's `docker/main/install_hailort.sh` on `dev`. The cap is the gate: HailoRT enforces exact-match between kernel driver and userspace library, and Frigate is the consumer the sysext exists to serve. Updates `hailo.driver` in `tracked-versions.json`.
+
+### Consolidated commit and dispatch
+
+If anything moved, the workflow writes the state file in one commit, runs `sync-build-defaults.sh` to keep `build.yml`'s `workflow_dispatch` defaults aligned, and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge — a human verifies the build on Hailo-8 hardware and promotes it via the GitHub UI.
 
 ## Comparison with NVIDIA Sysext
 
