@@ -54,11 +54,12 @@ curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/insta
 1. **Downloads `hailo.raw`** from the GitHub release matching your TrueNAS version (or uses a local file)
 2. **Verifies the checksum** (SHA256)
 3. **Downloads Hailo-8 firmware** directly from Hailo's S3 servers (not redistributed by this project)
-4. **Injects firmware** into the sysext squashfs (unpacks, adds firmware, repacks)
-5. **Installs the sysext** to `/usr/share/truenas/sysext-extensions/hailo.raw`
-6. **Activates the sysext** via TrueNAS's symlink + refresh pattern
-7. **Loads the kernel module** via `insmod`
-8. **Sets up persistence** (see below)
+4. **Verifies firmware SHA256** against the hash published in `.github/tracked-versions.json`
+5. **Injects firmware** into the sysext squashfs (unpacks, adds firmware, repacks)
+6. **Installs the sysext** to `/usr/share/truenas/sysext-extensions/hailo.raw`
+7. **Activates the sysext** via TrueNAS's symlink + refresh pattern
+8. **Loads the kernel module** via `insmod`
+9. **Sets up persistence** (see below)
 
 ## Persistence
 
