@@ -435,6 +435,51 @@ if [ ! -s /tmp/hailo8_fw.bin ]; then
 fi
 echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
 
+# --- Verify firmware against published sha256 ---
+# tracked-versions.json records the sha256 of the firmware that matches the
+# tracked HailoRT driver. Reuses the JSON fetched earlier (same snapshot
+# used to resolve HAILO_VERSION) so the version and sha256 always come from
+# the same point-in-time view of the source repo.
+echo "Verifying firmware sha256..."
+LOCAL_FW_SHA=$(sha256sum /tmp/hailo8_fw.bin | awk '{print $1}')
+echo "  local sha256:  ${LOCAL_FW_SHA}"
+
+PUBLISHED_FW_SHA=$(printf '%s' "$TRACKED_VERSIONS_JSON" \
+    | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    v = d.get('hailo', {}).get('firmware_sha256', '')
+    print(v, end='')
+except Exception:
+    pass
+" 2>/dev/null) || PUBLISHED_FW_SHA=""
+
+if [ -z "$PUBLISHED_FW_SHA" ]; then
+    echo "ERROR: Could not fetch hailo.firmware_sha256 from ${REPO}/.github/tracked-versions.json" >&2
+    echo "  Refusing to install unverified firmware. Check that the field exists in the source repo's tracked-versions.json." >&2
+    rm -f /tmp/hailo8_fw.bin
+    exit 1
+fi
+if ! printf '%s' "$PUBLISHED_FW_SHA" | grep -qE '^[0-9a-f]{64}$'; then
+    echo "ERROR: Published firmware_sha256 is not a 64-char hex string: '${PUBLISHED_FW_SHA}'" >&2
+    rm -f /tmp/hailo8_fw.bin
+    exit 1
+fi
+echo "  published:     ${PUBLISHED_FW_SHA}"
+
+if [ "$LOCAL_FW_SHA" != "$PUBLISHED_FW_SHA" ]; then
+    echo "ERROR: Firmware sha256 mismatch — refusing to install" >&2
+    echo "  expected: ${PUBLISHED_FW_SHA}" >&2
+    echo "  got:      ${LOCAL_FW_SHA}" >&2
+    echo "  This usually means the Hailo S3 bucket has a different version" >&2
+    echo "  than tracked-versions.json expected. Re-check the tracked HailoRT" >&2
+    echo "  driver version, or open an issue on ${REPO}." >&2
+    rm -f /tmp/hailo8_fw.bin
+    exit 1
+fi
+echo "Firmware sha256 OK"
+
 # --- Inject firmware into hailo.raw squashfs ---
 echo "Injecting firmware into hailo.raw..."
 if command -v unsquashfs &>/dev/null && command -v mksquashfs &>/dev/null; then
