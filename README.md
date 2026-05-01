@@ -66,7 +66,7 @@ sudo hailortcli fw-control identify     # Firmware responding
 ### Uninstall
 
 ```bash
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/restore.sh | sudo bash
+curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/uninstall.sh | sudo bash
 ```
 
 ## Using with Frigate

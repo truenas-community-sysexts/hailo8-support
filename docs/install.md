@@ -78,5 +78,6 @@ The PREINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`,
 | Script | Purpose |
 | --- | --- |
 | `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
+| `scripts/uninstall.sh` | Discoverable alias — downloads and runs `restore.sh` |
 | `scripts/restore.sh` | Uninstalls sysext, deregisters init script, cleans up persistent storage |
 | `scripts/hailo-preinit.sh` | Boot-time script — activates sysext before apps start (also embedded in install.sh) |
