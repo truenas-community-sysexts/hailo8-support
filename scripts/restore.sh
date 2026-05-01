@@ -16,10 +16,13 @@ if lsmod | grep -q hailo_pci; then
     rmmod hailo_pci || echo "WARNING: Failed to unload hailo_pci"
 fi
 
-# Remove hailo sysext symlink and refresh
+# Remove hailo sysext symlink and unmerge so /usr can be remounted writable.
+# Plain `systemd-sysext refresh` would re-merge any other active sysexts (e.g.
+# the NVIDIA sysext on TrueNAS 25.10), which keeps the /usr overlay in place
+# and makes the upcoming `zfs set readonly=off` fail.
 echo "Removing hailo sysext..."
 rm -f /run/extensions/hailo.raw
-systemd-sysext refresh 2>/dev/null || true
+systemd-sysext unmerge 2>/dev/null || true
 
 # Make /usr writable
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr (are you running as root?)"; exit 1; }

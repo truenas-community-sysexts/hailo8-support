@@ -176,7 +176,7 @@ echo "=== Installing hailo.raw ==="
 # Remove hailo from sysext before modifying
 echo "Removing old hailo sysext symlink..."
 rm -f /run/extensions/hailo.raw
-systemd-sysext refresh 2>/dev/null || true
+systemd-sysext unmerge 2>/dev/null || true
 
 # Make /usr writable
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr"; exit 1; }
@@ -332,7 +332,7 @@ fi
 if [ "$NEED_COPY" = true ]; then
     log "Removing old hailo sysext..."
     rm -f /run/extensions/hailo.raw
-    systemd-sysext refresh 2>/dev/null || true
+    systemd-sysext unmerge 2>/dev/null || true
 
     log "Making /usr writable..."
     USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)

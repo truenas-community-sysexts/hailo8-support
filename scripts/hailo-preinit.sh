@@ -57,7 +57,7 @@ fi
 if [ "$NEED_COPY" = true ]; then
     log "Removing old hailo sysext..."
     rm -f /run/extensions/hailo.raw
-    systemd-sysext refresh 2>/dev/null || true
+    systemd-sysext unmerge 2>/dev/null || true
 
     log "Making /usr writable..."
     USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
