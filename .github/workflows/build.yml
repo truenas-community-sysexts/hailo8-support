@@ -2,29 +2,23 @@ name: Build Hailo Sysext
 
 on:
   workflow_dispatch:
-    # Defaults below are kept in sync with .github/tracked-versions.json
-    # and the runner resolved from TrueNAS's published Debian release by
-    # .github/scripts/sync-build-defaults.sh, which the scheduled
-    # check-releases workflow invokes after updating the state file. A
-    # manual dispatch from the Actions UI therefore pre-fills the latest
-    # tracked combination; the user can still override any field.
     inputs:
       truenas_version:
-        description: 'TrueNAS version'
-        required: true
-        default: '25.10.3'
+        description: 'TrueNAS version (leave blank for latest tracked)'
+        required: false
+        default: ''
       hailo_driver_version:
-        description: 'HailoRT driver version'
-        required: true
-        default: '4.21.0'
+        description: 'HailoRT driver version (leave blank for latest tracked)'
+        required: false
+        default: ''
       train_name:
-        description: 'Train name'
-        required: true
-        default: 'Goldeye'
+        description: 'Train name (leave blank for latest tracked)'
+        required: false
+        default: ''
       runner:
-        description: 'GitHub Actions runner image (must have GLIBC ≤ TrueNAS rootfs)'
-        required: true
-        default: 'ubuntu-22.04'
+        description: 'GitHub Actions runner (leave blank to auto-resolve from TrueNAS release)'
+        required: false
+        default: ''
       mark_latest:
         description: 'Mark this release as Latest on GitHub'
         required: false
@@ -48,7 +42,7 @@ on:
       runner:
         type: string
         required: false
-        default: 'ubuntu-22.04'
+        default: ''
       mark_latest:
         type: string
         required: false
@@ -58,14 +52,78 @@ permissions:
   contents: write
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      truenas_version: ${{ steps.params.outputs.truenas_version }}
+      hailo_driver_version: ${{ steps.params.outputs.hailo_driver_version }}
+      train_name: ${{ steps.params.outputs.train_name }}
+      runner: ${{ steps.params.outputs.runner }}
+      mark_latest: ${{ steps.params.outputs.mark_latest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/tracked-versions.json
+            .github/scripts/resolve-runner.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve build parameters
+        id: params
+        env:
+          INPUT_TRUENAS_VERSION: ${{ inputs.truenas_version }}
+          INPUT_HAILO_DRIVER_VERSION: ${{ inputs.hailo_driver_version }}
+          INPUT_TRAIN_NAME: ${{ inputs.train_name }}
+          INPUT_RUNNER: ${{ inputs.runner }}
+          INPUT_MARK_LATEST: ${{ inputs.mark_latest }}
+        run: |
+          set -euo pipefail
+
+          TRACKED=$(python3 -c "
+          import json
+          with open('.github/tracked-versions.json') as f:
+              d = json.load(f)
+          print(d['truenas']['version'])
+          print(d['truenas']['train'])
+          print(d['hailo']['driver'])
+          ")
+          TRACKED_VERSION=$(sed -n '1p' <<< "$TRACKED")
+          TRACKED_TRAIN=$(sed -n '2p' <<< "$TRACKED")
+          TRACKED_HAILO=$(sed -n '3p' <<< "$TRACKED")
+
+          VERSION="${INPUT_TRUENAS_VERSION:-$TRACKED_VERSION}"
+          TRAIN="${INPUT_TRAIN_NAME:-$TRACKED_TRAIN}"
+          HAILO="${INPUT_HAILO_DRIVER_VERSION:-$TRACKED_HAILO}"
+          RUNNER="${INPUT_RUNNER}"
+          MARK_LATEST="${INPUT_MARK_LATEST:-true}"
+
+          if [ -z "$VERSION" ]; then VERSION="$TRACKED_VERSION"; fi
+          if [ -z "$TRAIN" ];   then TRAIN="$TRACKED_TRAIN";     fi
+          if [ -z "$HAILO" ];   then HAILO="$TRACKED_HAILO";     fi
+
+          if [ -z "$RUNNER" ]; then
+            RUNNER=$(.github/scripts/resolve-runner.sh "$TRAIN" "$VERSION")
+          fi
+
+          {
+            echo "truenas_version=${VERSION}"
+            echo "hailo_driver_version=${HAILO}"
+            echo "train_name=${TRAIN}"
+            echo "runner=${RUNNER}"
+            echo "mark_latest=${MARK_LATEST}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved build parameters:"
+          echo "  truenas_version=${VERSION}"
+          echo "  hailo_driver_version=${HAILO}"
+          echo "  train_name=${TRAIN}"
+          echo "  runner=${RUNNER}"
+          echo "  mark_latest=${MARK_LATEST}"
+
   build:
-    # Runner is resolved from TrueNAS's published Debian release at the
-    # tracked version (see .github/scripts/resolve-runner.sh). The
-    # runner's GLIBC must be ≤ the rootfs's so the kernel module / shared
-    # library we build link cleanly when loaded on TrueNAS. Auto-bump
-    # workflows pass this in; the manual-dispatch default is the runner
-    # for the currently tracked TrueNAS version.
-    runs-on: ${{ inputs.runner }}
+    needs: resolve
+    runs-on: ${{ needs.resolve.outputs.runner }}
     timeout-minutes: 90
 
     steps:
@@ -91,13 +149,13 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /tmp/truenas.iso
-          key: truenas-iso-${{ inputs.truenas_version }}
+          key: truenas-iso-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Download TrueNAS ISO
         if: steps.iso-cache.outputs.cache-hit != 'true'
         run: |
-          TRAIN="TrueNAS-SCALE-${{ inputs.train_name }}"
-          VERSION="${{ inputs.truenas_version }}"
+          TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
+          VERSION="${{ needs.resolve.outputs.truenas_version }}"
           ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
           echo "Downloading: ${ISO_URL}"
           curl -fSL "$ISO_URL" -o /tmp/truenas.iso
@@ -108,14 +166,14 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/truenas.iso
-          key: truenas-iso-${{ inputs.truenas_version }}
+          key: truenas-iso-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Restore cached kernel headers
         id: headers-cache
         uses: actions/cache/restore@v4
         with:
           path: /tmp/kernel-headers
-          key: kernel-headers-v3-${{ inputs.truenas_version }}
+          key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Extract kernel headers from TrueNAS ISO
         if: steps.headers-cache.outputs.cache-hit != 'true'
@@ -279,7 +337,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/kernel-headers
-          key: kernel-headers-v3-${{ inputs.truenas_version }}
+          key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
         run: |
@@ -312,7 +370,7 @@ jobs:
             REAL_KVER=$(tr -d '[:space:]' < /tmp/kernel-headers/.real-kver)
           fi
           if [ -z "$REAL_KVER" ]; then
-            echo "::error title=kernel-version::.real-kver missing or empty in cached kernel headers. Bust the kernel-headers cache (key: kernel-headers-v3-${{ inputs.truenas_version }}) and re-run."
+            echo "::error title=kernel-version::.real-kver missing or empty in cached kernel headers. Bust the kernel-headers cache (key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}) and re-run."
             exit 1
           fi
           echo "Real kernel version: ${REAL_KVER}"
@@ -327,7 +385,7 @@ jobs:
           # silently ship a driver newer than Frigate, bypassing the gate
           # the rest of the pipeline enforces (HailoRT requires exact-match
           # between kernel module and userspace library).
-          git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
+          git clone --depth 1 --branch v${{ needs.resolve.outputs.hailo_driver_version }} \
             https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers
           echo "Checked out hailort-drivers:"
           cd /tmp/hailort-drivers && git log --oneline -1
@@ -355,7 +413,7 @@ jobs:
           # runner's GLIBC. Reusing a cache built on a newer runner (e.g.
           # ubuntu-24.04) on an older one (ubuntu-22.04) would ship a
           # binary the TrueNAS rootfs can't load.
-          key: hailort-build-v3-${{ inputs.runner }}-${{ inputs.hailo_driver_version }}
+          key: hailort-build-v3-${{ needs.resolve.outputs.runner }}-${{ needs.resolve.outputs.hailo_driver_version }}
 
       - name: Clone hailort
         if: steps.hailort-cache.outputs.cache-hit != 'true'
@@ -363,7 +421,7 @@ jobs:
           # Same reasoning as the hailort-drivers clone above: the tag was
           # validated upstream; a missing tag at build time is a hard
           # failure, not a fallback to hailo8 HEAD.
-          git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
+          git clone --depth 1 --branch v${{ needs.resolve.outputs.hailo_driver_version }} \
             https://github.com/hailo-ai/hailort.git /tmp/hailort
           echo "Checked out hailort:"
           cd /tmp/hailort && git log --oneline -1
@@ -385,7 +443,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/hailort/build
-          key: hailort-build-v3-${{ inputs.runner }}-${{ inputs.hailo_driver_version }}
+          key: hailort-build-v3-${{ needs.resolve.outputs.runner }}-${{ needs.resolve.outputs.hailo_driver_version }}
 
       # ── Assemble sysext ──
       # NOTE: Firmware (hailo8_fw.bin) is NOT included in the sysext.
@@ -590,17 +648,17 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hailo-sysext-${{ inputs.truenas_version }}-hailort-${{ inputs.hailo_driver_version }}
+          name: hailo-sysext-${{ needs.resolve.outputs.truenas_version }}-hailort-${{ needs.resolve.outputs.hailo_driver_version }}
           path: |
             hailo.raw
             hailo.raw.sha256
 
       - name: Render release notes
         env:
-          TRUENAS_VERSION: ${{ inputs.truenas_version }}
-          TRAIN_NAME: ${{ inputs.train_name }}
-          HAILO_DRIVER: ${{ inputs.hailo_driver_version }}
-          RUNNER_IMAGE: ${{ inputs.runner }}
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
+          TRAIN_NAME: ${{ needs.resolve.outputs.train_name }}
+          HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
+          RUNNER_IMAGE: ${{ needs.resolve.outputs.runner }}
           BUILD_SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
         run: |
@@ -660,8 +718,8 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ inputs.truenas_version }}-hailo${{ inputs.hailo_driver_version }}
-          name: "TrueNAS ${{ inputs.truenas_version }} - Hailo ${{ inputs.hailo_driver_version }}"
+          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}
+          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }}"
           body_path: release-notes.md
           files: |
             hailo.raw
@@ -671,6 +729,6 @@ jobs:
             scripts/uninstall.sh
           draft: false
           prerelease: false
-          make_latest: ${{ inputs.mark_latest }}
+          make_latest: ${{ needs.resolve.outputs.mark_latest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

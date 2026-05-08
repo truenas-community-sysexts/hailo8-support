@@ -325,11 +325,11 @@ jobs:
 
       # ─────────────────────────────────────────────────────────────────────
       # Single commit covering whichever fields actually moved. The state
-      # file is rewritten in place; sync-build-defaults.sh keeps build.yml's
-      # workflow_dispatch defaults aligned. Commit message reflects the
+      # file is rewritten in place; build.yml reads it at runtime so no
+      # workflow file changes are needed. Commit message reflects the
       # combination so `git log` is self-explanatory.
       # ─────────────────────────────────────────────────────────────────────
-      - name: Update tracked-versions and build.yml defaults
+      - name: Update tracked-versions
         id: write
         if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
         env:
@@ -339,7 +339,6 @@ jobs:
           HAILO_CHANGED: ${{ steps.hailo.outputs.changed }}
           NEW_HAILO_DRIVER: ${{ steps.hailo.outputs.driver }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
-          RUNNER: ${{ steps.runner.outputs.runner }}
         run: |
           set -euo pipefail
 
@@ -384,8 +383,7 @@ jobs:
               f.write('\n')
           PY
 
-          # Determine the post-update values to feed to sync-build-defaults.sh
-          # and to the dispatch.
+          # Determine the post-update values for the dispatch.
           if [ "$TRUENAS_CHANGED" = "true" ]; then
             FINAL_TRUENAS_VERSION="$NEW_TRUENAS_VERSION"
             FINAL_TRAIN="$NEW_TRAIN"
@@ -398,12 +396,6 @@ jobs:
           else
             FINAL_HAILO_DRIVER="${{ steps.tracked.outputs.hailo_driver }}"
           fi
-
-          .github/scripts/sync-build-defaults.sh \
-            "truenas_version=${FINAL_TRUENAS_VERSION}" \
-            "train_name=${FINAL_TRAIN}" \
-            "hailo_driver_version=${FINAL_HAILO_DRIVER}" \
-            "runner=${RUNNER}"
 
           # Compose a commit message that names what moved.
           if [ "$TRUENAS_CHANGED" = "true" ] && [ "$HAILO_CHANGED" = "true" ]; then
@@ -424,7 +416,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/tracked-versions.json .github/workflows/build.yml
+          git add .github/tracked-versions.json
           git commit -m "$MSG" || {
             echo "ERROR: Failed to commit tracked-versions update"
             exit 1
