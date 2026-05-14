@@ -665,6 +665,34 @@ jobs:
           sha256sum hailo.raw > hailo.raw.sha256
           cat hailo.raw.sha256
 
+      - name: Compute firmware sha256
+        # Each release self-describes the firmware sha it was built against.
+        # install.sh fetches this asset from the same release as hailo.raw,
+        # eliminating the cross-source mismatch tracked-versions.json caused
+        # (see #22, #24). File format: single line, 64 hex chars, no filename.
+        env:
+          HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
+        run: |
+          set -euo pipefail
+          FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_DRIVER}/FW/hailo8_fw.${HAILO_DRIVER}.bin"
+          echo "Fetching firmware: ${FW_URL}"
+          if ! curl -fsSL --max-time 300 "$FW_URL" -o /tmp/hailo8_fw.bin; then
+            echo "::error title=firmware-fetch::failed to download ${FW_URL} — refusing to publish without a firmware.sha256"
+            exit 1
+          fi
+          if [ ! -s /tmp/hailo8_fw.bin ]; then
+            echo "::error title=firmware-fetch::downloaded firmware is empty (${FW_URL})"
+            exit 1
+          fi
+          FW_SHA=$(sha256sum /tmp/hailo8_fw.bin | awk '{print $1}')
+          if ! printf '%s' "$FW_SHA" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "::error title=firmware-fetch::sha256sum returned malformed value: ${FW_SHA}"
+            exit 1
+          fi
+          printf '%s\n' "$FW_SHA" > firmware.sha256
+          echo "firmware.sha256: ${FW_SHA}"
+          rm -f /tmp/hailo8_fw.bin
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -751,6 +779,7 @@ jobs:
           files: |
             hailo.raw
             hailo.raw.sha256
+            firmware.sha256
             scripts/install.sh
             scripts/restore.sh
             scripts/uninstall.sh

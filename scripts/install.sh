@@ -227,6 +227,12 @@ POOL_NAME=""
 PERSIST_PATH=""
 CHECK_MODE=0
 DRY_RUN=0
+# Override for --local-raw users (no release to fetch firmware.sha256 from).
+# Set to a 64-char hex sha256 via --expected-firmware-sha=<hex>.
+EXPECTED_FW_SHA=""
+# Override for --local-raw users when the local sysext was built against a
+# specific HailoRT version. Set via --firmware-version=<x.y.z>.
+LOCAL_FW_VERSION=""
 
 for arg in "$@"; do
     case "$arg" in
@@ -244,23 +250,39 @@ for arg in "$@"; do
             ;;
         --check) CHECK_MODE=1 ;;
         --dry-run) DRY_RUN=1 ;;
+        --expected-firmware-sha=*)
+            EXPECTED_FW_SHA="${arg#*=}"
+            if ! printf '%s' "$EXPECTED_FW_SHA" | grep -qE '^[0-9a-f]{64}$'; then
+                echo "ERROR: --expected-firmware-sha= requires a 64-char lowercase hex sha256" >&2
+                exit 2
+            fi
+            ;;
+        --firmware-version=*)
+            LOCAL_FW_VERSION="${arg#*=}"
+            if ! printf '%s' "$LOCAL_FW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+                echo "ERROR: --firmware-version= requires X.Y.Z (e.g., 4.21.0)" >&2
+                exit 2
+            fi
+            ;;
         --help)
             echo "Usage: sudo ./install.sh [OPTIONS] [path-to-hailo.raw]"
             echo ""
             echo "Options:"
-            echo "  --repo=OWNER/NAME        GitHub repo to download release from (default: scyto/truenas-hailo)"
-            echo "                           Can also be set via HAILO_REPO env var."
-            echo "  --pool=NAME              ZFS pool for persistent config (e.g., fast)"
-            echo "  --persist-path=PATH      Exact path for persistent config"
-            echo "  --check                  Probe an existing install (read-only) and report status"
-            echo "  --dry-run                Validate everything (downloads, checksums, network) without modifying the system"
-            echo "  --help                   Show this help"
+            echo "  --repo=OWNER/NAME             GitHub repo to download release from (default: scyto/truenas-hailo)"
+            echo "                                Can also be set via HAILO_REPO env var."
+            echo "  --pool=NAME                   ZFS pool for persistent config (e.g., fast)"
+            echo "  --persist-path=PATH           Exact path for persistent config"
+            echo "  --check                       Probe an existing install (read-only) and report status"
+            echo "  --dry-run                     Validate everything (downloads, checksums, network) without modifying the system"
+            echo "  --firmware-version=X.Y.Z      [--local-raw only] HailoRT firmware version to download"
+            echo "  --expected-firmware-sha=HEX   [--local-raw only] expected sha256 of the firmware (64 hex chars)"
+            echo "  --help                        Show this help"
             echo ""
             echo "Examples:"
             echo "  sudo ./install.sh --pool=fast"
             echo "  sudo ./install.sh --check"
             echo "  sudo ./install.sh --dry-run"
-            echo "  sudo ./install.sh /tmp/hailo-input.raw   # any path other than /tmp/hailo.raw (staging)"
+            echo "  sudo ./install.sh /tmp/hailo-input.raw --firmware-version=4.21.0 --expected-firmware-sha=2a5c94..."
             echo "  curl -fsSL <url>/install.sh | sudo bash"
             exit 0
             ;;
@@ -399,34 +421,20 @@ fi
 echo ""
 echo "=== Downloading Hailo-8 firmware ==="
 
-# Fetch tracked-versions.json once and reuse for both HAILO_VERSION fallback
-# and firmware-sha256 verification below. Two fetches in close succession
-# would open a small TOCTOU window where a push between them could leave
-# version and sha256 inconsistent.
+# Resolve HailoRT version and the expected firmware sha256.
 #
-# Pin to RELEASE_TAG's commit (not main) so the firmware sha256 is paired
-# with the release actually being installed. Fixes #22: main can describe a
-# newer driver than the release picked for the user's TrueNAS version (build
-# pipeline bumps main before publishing the matching release; or the user's
-# TrueNAS version has no release for the latest tracked driver yet), causing
-# the sha256 check to compare this-release's firmware against main's sha.
-# Fall back to main for the --local-raw path (no RELEASE_TAG) and for tags
-# that predate the tracked-versions.json file.
-TRACKED_VERSIONS_JSON=""
-if [ -n "${RELEASE_TAG:-}" ]; then
-    TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
-        "https://raw.githubusercontent.com/${REPO}/${RELEASE_TAG}/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
-fi
-if [ -z "$TRACKED_VERSIONS_JSON" ]; then
-    TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
-        "https://raw.githubusercontent.com/${REPO}/main/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
-fi
-
-# Determine HailoRT version from release tag or the repo's tracked-versions
-# state file. The release tag is the primary source (format
-# v<truenas>-hailo<driver>[-g<sha>]); the JSON fallback handles tag-format
-# drift.
+# Each release is self-describing: build.yml uploads firmware.sha256 as an
+# asset alongside hailo.raw, so the sha is paired with the release being
+# installed (see #24). install.sh consults nothing outside the release.
+#
+#   Release flow:   tag → HAILO_VERSION, ${BASE_URL}/firmware.sha256 → expected sha
+#   --local-raw:    user supplies --firmware-version and --expected-firmware-sha
+#
+# No tracked-versions.json fetch, no main fallback: cross-source mismatches
+# (the original #22 bug) are structurally impossible.
 HAILO_VERSION=""
+PUBLISHED_FW_SHA=""
+
 if [ -n "${RELEASE_TAG:-}" ]; then
     # Extract the hailo version from tags like:
     #   v25.10.2.1-hailo4.20.0            (legacy, pre-issue-#17)
@@ -434,15 +442,45 @@ if [ -n "${RELEASE_TAG:-}" ]; then
     # The capture stops at the first non-[0-9.] char after `hailo`, so the
     # `-g<sha>` suffix (or any future suffix) is left out of $HAILO_VERSION.
     HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9][0-9.]*\).*/\1/p')
+    if [ -z "$HAILO_VERSION" ]; then
+        echo "ERROR: Could not parse HailoRT version from release tag '${RELEASE_TAG}'." >&2
+        echo "  Expected format: v<truenas>-hailo<driver>[-g<sha>-r<run>]" >&2
+        exit 1
+    fi
+
+    # Fetch firmware.sha256 from the same release. A 404 here means the
+    # release predates per-release sha pinning (issue #24) — refuse rather
+    # than fall back to main, which is what produced the original cross-
+    # source mismatch.
+    FW_SHA_URL="${BASE_URL}/firmware.sha256"
+    echo "Fetching expected firmware sha256: ${FW_SHA_URL}"
+    if ! PUBLISHED_FW_SHA=$(curl -fsSL --max-time 30 "$FW_SHA_URL" 2>/dev/null); then
+        echo "ERROR: Release ${RELEASE_TAG} has no firmware.sha256 asset." >&2
+        echo "  This release predates per-release firmware pinning (see #24)." >&2
+        echo "  GitHub burns releases immutable after a few days, so the asset" >&2
+        echo "  cannot be added retroactively. Options:" >&2
+        echo "    - Wait for / request a fresh build for your TrueNAS version" >&2
+        echo "      (dispatch build.yml in ${REPO})" >&2
+        echo "    - Run with a local hailo.raw and supply the override:" >&2
+        echo "      sudo ./install.sh /path/to/hailo.raw \\" >&2
+        echo "        --firmware-version=<X.Y.Z> --expected-firmware-sha=<hex>" >&2
+        exit 1
+    fi
+    PUBLISHED_FW_SHA=$(printf '%s' "$PUBLISHED_FW_SHA" | tr -d '[:space:]')
+else
+    # --local-raw path: no release tag, so no asset to fetch. Require the
+    # user to supply both --firmware-version and --expected-firmware-sha.
+    if [ -z "$LOCAL_FW_VERSION" ] || [ -z "$EXPECTED_FW_SHA" ]; then
+        echo "ERROR: --local-raw requires both --firmware-version=X.Y.Z and --expected-firmware-sha=<hex>." >&2
+        echo "  Without a release tag there is no firmware.sha256 asset to consult." >&2
+        exit 1
+    fi
+    HAILO_VERSION="$LOCAL_FW_VERSION"
+    PUBLISHED_FW_SHA="$EXPECTED_FW_SHA"
 fi
-if [ -z "$HAILO_VERSION" ] && [ -n "$TRACKED_VERSIONS_JSON" ]; then
-    HAILO_VERSION=$(printf '%s' "$TRACKED_VERSIONS_JSON" \
-        | python3 -c "import sys,json; print(json.load(sys.stdin)['hailo']['driver'])" 2>/dev/null) || true
-fi
-if [ -z "$HAILO_VERSION" ]; then
-    echo "ERROR: Could not determine HailoRT version from release tag or repo state."
-    echo "  Ensure the release tag matches v<truenas>-hailo<driver>[-g<sha>] format,"
-    echo "  or that ${REPO} has .github/tracked-versions.json on the main branch."
+
+if ! printf '%s' "$PUBLISHED_FW_SHA" | grep -qE '^[0-9a-f]{64}$'; then
+    echo "ERROR: Expected firmware sha256 is not a 64-char hex string: '${PUBLISHED_FW_SHA}'" >&2
     exit 1
 fi
 
@@ -462,46 +500,18 @@ if [ ! -s /tmp/hailo8_fw.bin ]; then
 fi
 echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
 
-# --- Verify firmware against published sha256 ---
-# tracked-versions.json records the sha256 of the firmware that matches the
-# tracked HailoRT driver. Reuses the JSON fetched earlier (same snapshot
-# used to resolve HAILO_VERSION) so the version and sha256 always come from
-# the same point-in-time view of the source repo.
 echo "Verifying firmware sha256..."
 LOCAL_FW_SHA=$(sha256sum /tmp/hailo8_fw.bin | awk '{print $1}')
 echo "  local sha256:  ${LOCAL_FW_SHA}"
-
-PUBLISHED_FW_SHA=$(printf '%s' "$TRACKED_VERSIONS_JSON" \
-    | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    v = d.get('hailo', {}).get('firmware_sha256', '')
-    print(v, end='')
-except Exception:
-    pass
-" 2>/dev/null) || PUBLISHED_FW_SHA=""
-
-if [ -z "$PUBLISHED_FW_SHA" ]; then
-    echo "ERROR: Could not fetch hailo.firmware_sha256 from ${REPO}/.github/tracked-versions.json" >&2
-    echo "  Refusing to install unverified firmware. Check that the field exists in the source repo's tracked-versions.json." >&2
-    rm -f /tmp/hailo8_fw.bin
-    exit 1
-fi
-if ! printf '%s' "$PUBLISHED_FW_SHA" | grep -qE '^[0-9a-f]{64}$'; then
-    echo "ERROR: Published firmware_sha256 is not a 64-char hex string: '${PUBLISHED_FW_SHA}'" >&2
-    rm -f /tmp/hailo8_fw.bin
-    exit 1
-fi
-echo "  published:     ${PUBLISHED_FW_SHA}"
+echo "  expected:      ${PUBLISHED_FW_SHA}"
 
 if [ "$LOCAL_FW_SHA" != "$PUBLISHED_FW_SHA" ]; then
     echo "ERROR: Firmware sha256 mismatch — refusing to install" >&2
     echo "  expected: ${PUBLISHED_FW_SHA}" >&2
     echo "  got:      ${LOCAL_FW_SHA}" >&2
-    echo "  This usually means the Hailo S3 bucket has a different version" >&2
-    echo "  than tracked-versions.json expected. Re-check the tracked HailoRT" >&2
-    echo "  driver version, or open an issue on ${REPO}." >&2
+    echo "  The release's firmware.sha256 disagrees with what Hailo's S3 served." >&2
+    echo "  Either the S3 binary changed under us, or the release asset is corrupt." >&2
+    echo "  Open an issue on ${REPO}." >&2
     rm -f /tmp/hailo8_fw.bin
     exit 1
 fi
