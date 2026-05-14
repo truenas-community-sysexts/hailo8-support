@@ -403,8 +403,24 @@ echo "=== Downloading Hailo-8 firmware ==="
 # and firmware-sha256 verification below. Two fetches in close succession
 # would open a small TOCTOU window where a push between them could leave
 # version and sha256 inconsistent.
-TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
-    "https://raw.githubusercontent.com/${REPO}/main/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
+#
+# Pin to RELEASE_TAG's commit (not main) so the firmware sha256 is paired
+# with the release actually being installed. Fixes #22: main can describe a
+# newer driver than the release picked for the user's TrueNAS version (build
+# pipeline bumps main before publishing the matching release; or the user's
+# TrueNAS version has no release for the latest tracked driver yet), causing
+# the sha256 check to compare this-release's firmware against main's sha.
+# Fall back to main for the --local-raw path (no RELEASE_TAG) and for tags
+# that predate the tracked-versions.json file.
+TRACKED_VERSIONS_JSON=""
+if [ -n "${RELEASE_TAG:-}" ]; then
+    TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
+        "https://raw.githubusercontent.com/${REPO}/${RELEASE_TAG}/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
+fi
+if [ -z "$TRACKED_VERSIONS_JSON" ]; then
+    TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
+        "https://raw.githubusercontent.com/${REPO}/main/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
+fi
 
 # Determine HailoRT version from release tag or the repo's tracked-versions
 # state file. The release tag is the primary source (format
