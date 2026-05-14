@@ -143,15 +143,25 @@ jobs:
             kmod \
             curl
 
-      - name: Compute short SHA
-        id: short_sha
-        # Burned into the release tag (-g<sha>) so each build is uniquely
-        # addressable and tag reuse can't collide with GitHub's immutable-
-        # release tag-burn (see issue #17). Exposed as a step output rather
-        # than via $GITHUB_ENV so workflow expressions can reference it
-        # statically (${{ steps.short_sha.outputs.value }}); run blocks that
-        # need it as a shell variable get it through the step's env: block.
-        run: echo "value=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - name: Compute build identifier
+        id: build_id
+        # Burned into the release tag (-g<sha>-r<run>) so each invocation is
+        # uniquely addressable and tag reuse can't collide with GitHub's
+        # immutable-release tag-burn (see issue #17). Two components:
+        #   -g<sha>  : 7-char source commit SHA, ties release to code.
+        #   -r<run>  : github.run_number — monotonic per-workflow build
+        #              counter. Covers the same-commit re-dispatch case
+        #              (manual retry after a transient failure, fresh
+        #              build after a deleted release, etc.) where the SHA
+        #              alone wouldn't change. run_number is short and
+        #              human-readable; run_id would also work but is an
+        #              opaque 11-digit ID.
+        # Exposed as step outputs (not $GITHUB_ENV) so workflow expressions
+        # can reference them statically; run blocks that need the values as
+        # shell vars get them through the step's env: block.
+        run: |
+          echo "sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "run_number=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
       # ── Obtain TrueNAS kernel headers from the release ISO ──
       - name: Restore cached TrueNAS ISO
@@ -670,7 +680,8 @@ jobs:
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
           RUNNER_IMAGE: ${{ needs.resolve.outputs.runner }}
           BUILD_SHA: ${{ github.sha }}
-          SHORT_SHA: ${{ steps.short_sha.outputs.value }}
+          SHORT_SHA: ${{ steps.build_id.outputs.sha }}
+          RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
         run: |
           # The body is regenerated on every dispatch — no template file checked
@@ -705,7 +716,7 @@ jobs:
 
           ### Install
           \`\`\`bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-g${SHORT_SHA}/install.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-g${SHORT_SHA}-r${RUN_NUMBER}/install.sh | sudo bash
           \`\`\`
 
           ### Verify
@@ -716,7 +727,7 @@ jobs:
 
           ### Uninstall
           \`\`\`bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-g${SHORT_SHA}/uninstall.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-g${SHORT_SHA}-r${RUN_NUMBER}/uninstall.sh | sudo bash
           \`\`\`
 
           ### Checksums
@@ -729,12 +740,13 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          # -g<sha> suffix: every build gets a unique tag so re-dispatching at
-          # the same TrueNAS/Hailo pair can't collide with GitHub's immutable-
-          # release tag-burn (issue #17). The 7-char SHA follows git-describe
-          # convention and ties the release back to the source commit.
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-g${{ steps.short_sha.outputs.value }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (${{ steps.short_sha.outputs.value }})"
+          # -g<sha>-r<run> suffix: every invocation gets a unique tag so
+          # nothing can collide with GitHub's immutable-release tag-burn
+          # (issue #17). -g<sha> ties the release back to its source commit
+          # (git-describe convention); -r<run> is github.run_number — covers
+          # the same-commit re-dispatch case where SHA alone wouldn't change.
+          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-g${{ steps.build_id.outputs.sha }}-r${{ steps.build_id.outputs.run_number }}
+          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (${{ steps.build_id.outputs.sha }})"
           body_path: release-notes.md
           files: |
             hailo.raw
