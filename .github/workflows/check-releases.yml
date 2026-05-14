@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # PAT (admin actor) is required to push tracked-versions.json back
           # to main — the default GITHUB_TOKEN runs as github-actions[bot],
