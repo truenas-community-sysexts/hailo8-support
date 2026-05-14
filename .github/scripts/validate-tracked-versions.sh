@@ -43,7 +43,6 @@ if not isinstance(data, dict):
 ver_re = re.compile(r"^\d+(\.\d+){1,4}$")
 # Hailo uses strict semver: X.Y.Z only (no 4-part variants).
 hailo_ver_re = re.compile(r"^\d+\.\d+\.\d+$")
-sha256_re = re.compile(r"^[0-9a-f]{64}$")
 
 truenas = data.get("truenas")
 if not isinstance(truenas, dict):
@@ -65,9 +64,12 @@ h_driver = hailo.get("driver")
 if not isinstance(h_driver, str) or not hailo_ver_re.match(h_driver):
     fail(f"'hailo.driver' missing or malformed (got {h_driver!r}); expected X.Y.Z")
 
-h_fw_sha = hailo.get("firmware_sha256")
-if not isinstance(h_fw_sha, str) or not sha256_re.match(h_fw_sha):
-    fail(f"'hailo.firmware_sha256' missing or malformed (got {h_fw_sha!r}); expected lowercase 64-char hex sha256")
+# firmware_sha256 was removed in #24 — build.yml now uploads firmware.sha256
+# as a per-release asset rather than tracking it in this file. Reject the
+# field if anyone re-adds it, to avoid a stale value drifting from the
+# release truth.
+if "firmware_sha256" in hailo:
+    fail("'hailo.firmware_sha256' is no longer tracked here — build.yml uploads firmware.sha256 as a per-release asset (see #24). Remove the field.")
 
-print(f"tracked-versions OK: TrueNAS {tn_version} ({tn_train}), HailoRT {h_driver} (fw {h_fw_sha[:8]}…)")
+print(f"tracked-versions OK: TrueNAS {tn_version} ({tn_train}), HailoRT {h_driver}")
 PY
