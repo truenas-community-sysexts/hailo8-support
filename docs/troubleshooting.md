@@ -32,8 +32,8 @@ sysext is no longer compatible.
 4. If a matching release exists, re-run the installer:
 
    ```bash
-   curl -fsSL https://github.com/andretakagi/truenas-hailo/releases/latest/download/install.sh \
-     | sudo bash -s -- --repo=andretakagi/truenas-hailo
+   curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh \
+     | sudo bash
    ```
 
    The installer downloads the matching `hailo.raw` and replaces the
