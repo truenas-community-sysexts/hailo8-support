@@ -50,7 +50,8 @@ jobs:
         env:
           CURRENT_VERSION: ${{ steps.tracked.outputs.truenas_version }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHECK_BUILDS }}
         run: |
           set -o pipefail
           echo "Currently tracked: ${CURRENT_VERSION} on train ${CURRENT_TRAIN}"
