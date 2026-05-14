@@ -21,7 +21,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          # PAT (admin actor) is required to push tracked-versions.json back
+          # to main — the default GITHUB_TOKEN runs as github-actions[bot],
+          # which the default-branch ruleset does not bypass.
+          token: ${{ secrets.CHECK_BUILDS }}
 
       # ─────────────────────────────────────────────────────────────────────
       # Read current tracked state.
@@ -50,7 +55,8 @@ jobs:
         env:
           CURRENT_VERSION: ${{ steps.tracked.outputs.truenas_version }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHECK_BUILDS }}
         run: |
           set -o pipefail
           echo "Currently tracked: ${CURRENT_VERSION} on train ${CURRENT_TRAIN}"
