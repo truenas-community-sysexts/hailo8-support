@@ -143,6 +143,16 @@ jobs:
             kmod \
             curl
 
+      - name: Compute short SHA
+        id: short_sha
+        # Burned into the release tag (-g<sha>) so each build is uniquely
+        # addressable and tag reuse can't collide with GitHub's immutable-
+        # release tag-burn (see issue #17). Exposed as a step output rather
+        # than via $GITHUB_ENV so workflow expressions can reference it
+        # statically (${{ steps.short_sha.outputs.value }}); run blocks that
+        # need it as a shell variable get it through the step's env: block.
+        run: echo "value=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
       # ── Obtain TrueNAS kernel headers from the release ISO ──
       - name: Restore cached TrueNAS ISO
         id: iso-cache
@@ -660,6 +670,7 @@ jobs:
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
           RUNNER_IMAGE: ${{ needs.resolve.outputs.runner }}
           BUILD_SHA: ${{ github.sha }}
+          SHORT_SHA: ${{ steps.short_sha.outputs.value }}
           REPO: ${{ github.repository }}
         run: |
           # The body is regenerated on every dispatch — no template file checked
@@ -694,7 +705,7 @@ jobs:
 
           ### Install
           \`\`\`bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}/install.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-g${SHORT_SHA}/install.sh | sudo bash
           \`\`\`
 
           ### Verify
@@ -705,7 +716,7 @@ jobs:
 
           ### Uninstall
           \`\`\`bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}/uninstall.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-g${SHORT_SHA}/uninstall.sh | sudo bash
           \`\`\`
 
           ### Checksums
@@ -718,8 +729,12 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }}"
+          # -g<sha> suffix: every build gets a unique tag so re-dispatching at
+          # the same TrueNAS/Hailo pair can't collide with GitHub's immutable-
+          # release tag-burn (issue #17). The 7-char SHA follows git-describe
+          # convention and ties the release back to the source commit.
+          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-g${{ steps.short_sha.outputs.value }}
+          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (${{ steps.short_sha.outputs.value }})"
           body_path: release-notes.md
           files: |
             hailo.raw
