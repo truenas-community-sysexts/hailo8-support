@@ -694,7 +694,7 @@ jobs:
           rm -f /tmp/hailo8_fw.bin
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hailo-sysext-${{ needs.resolve.outputs.truenas_version }}-hailort-${{ needs.resolve.outputs.hailo_driver_version }}
           path: |
