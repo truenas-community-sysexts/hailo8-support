@@ -351,6 +351,12 @@ try:
     if not matches:
         print('', end='')
     else:
+        # Multiple matches are expected: with SHA-suffixed tags every build
+        # produces a new release for the same version pair. Pick the most
+        # recently published. GitHub's /releases endpoint returns newest-first
+        # by default, but sorting explicitly here makes the selection a
+        # property of this code rather than of an undocumented API ordering.
+        matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
         print(matches[0]['tag_name'], end='')
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr)
@@ -401,12 +407,17 @@ TRACKED_VERSIONS_JSON=$(curl -sf --max-time 30 \
     "https://raw.githubusercontent.com/${REPO}/main/.github/tracked-versions.json" 2>/dev/null) || TRACKED_VERSIONS_JSON=""
 
 # Determine HailoRT version from release tag or the repo's tracked-versions
-# state file. The release tag is the primary source (format v<truenas>-hailo<driver>);
-# the JSON fallback handles tag-format drift.
+# state file. The release tag is the primary source (format
+# v<truenas>-hailo<driver>[-g<sha>]); the JSON fallback handles tag-format
+# drift.
 HAILO_VERSION=""
 if [ -n "${RELEASE_TAG:-}" ]; then
-    # Extract version from tag like v25.10.2.1-hailo4.20.0
-    HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9.]*\)$/\1/p')
+    # Extract the hailo version from tags like:
+    #   v25.10.2.1-hailo4.20.0            (legacy, pre-issue-#17)
+    #   v25.10.3-hailo4.21.0-g7854543     (current, SHA-suffixed)
+    # The capture stops at the first non-[0-9.] char after `hailo`, so the
+    # `-g<sha>` suffix (or any future suffix) is left out of $HAILO_VERSION.
+    HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9][0-9.]*\).*/\1/p')
 fi
 if [ -z "$HAILO_VERSION" ] && [ -n "$TRACKED_VERSIONS_JSON" ]; then
     HAILO_VERSION=$(printf '%s' "$TRACKED_VERSIONS_JSON" \
@@ -414,7 +425,7 @@ if [ -z "$HAILO_VERSION" ] && [ -n "$TRACKED_VERSIONS_JSON" ]; then
 fi
 if [ -z "$HAILO_VERSION" ]; then
     echo "ERROR: Could not determine HailoRT version from release tag or repo state."
-    echo "  Ensure the release tag matches v<truenas>-hailo<driver> format,"
+    echo "  Ensure the release tag matches v<truenas>-hailo<driver>[-g<sha>] format,"
     echo "  or that ${REPO} has .github/tracked-versions.json on the main branch."
     exit 1
 fi
