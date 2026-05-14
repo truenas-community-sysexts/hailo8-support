@@ -125,6 +125,9 @@ jobs:
     needs: resolve
     runs-on: ${{ needs.resolve.outputs.runner }}
     timeout-minutes: 90
+    outputs:
+      sha: ${{ steps.build_id.outputs.sha }}
+      run_number: ${{ steps.build_id.outputs.run_number }}
 
     steps:
       - name: Checkout repository
@@ -508,8 +511,8 @@ jobs:
           LIBNAME=$(basename "$LIBHAILORT")
           # Create soname symlinks
           cd "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
-          if [[ "$LIBNAME" =~ libhailort\.so\..* ]]; then
-            SONAME=$(echo "$LIBNAME" | sed 's/\(libhailort\.so\.[0-9]*\).*/\1/')
+          if [[ "$LIBNAME" =~ ^(libhailort\.so\.[0-9]+) ]]; then
+            SONAME="${BASH_REMATCH[1]}"
             [ "$SONAME" != "$LIBNAME" ] && ln -sf "$LIBNAME" "$SONAME"
             ln -sf "$LIBNAME" libhailort.so
           fi
@@ -693,14 +696,6 @@ jobs:
           echo "firmware.sha256: ${FW_SHA}"
           rm -f /tmp/hailo8_fw.bin
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: hailo-sysext-${{ needs.resolve.outputs.truenas_version }}-hailort-${{ needs.resolve.outputs.hailo_driver_version }}
-          path: |
-            hailo.raw
-            hailo.raw.sha256
-
       - name: Render release notes
         env:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
@@ -765,6 +760,31 @@ jobs:
           echo "=== Rendered release notes ==="
           cat release-notes.md
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: hailo-sysext-${{ needs.resolve.outputs.truenas_version }}-hailort-${{ needs.resolve.outputs.hailo_driver_version }}
+          path: |
+            hailo.raw
+            hailo.raw.sha256
+            firmware.sha256
+            release-notes.md
+
+  release:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hailo-sysext-${{ needs.resolve.outputs.truenas_version }}-hailort-${{ needs.resolve.outputs.hailo_driver_version }}
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
@@ -773,8 +793,8 @@ jobs:
           # (issue #17). -g<sha> ties the release back to its source commit
           # (git-describe convention); -r<run> is github.run_number — covers
           # the same-commit re-dispatch case where SHA alone wouldn't change.
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-g${{ steps.build_id.outputs.sha }}-r${{ steps.build_id.outputs.run_number }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (${{ steps.build_id.outputs.sha }})"
+          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-g${{ needs.build.outputs.sha }}-r${{ needs.build.outputs.run_number }}
+          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (${{ needs.build.outputs.sha }})"
           body_path: release-notes.md
           files: |
             hailo.raw
