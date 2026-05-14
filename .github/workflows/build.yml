@@ -766,7 +766,7 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # -g<sha>-r<run> suffix: every invocation gets a unique tag so
           # nothing can collide with GitHub's immutable-release tag-burn
