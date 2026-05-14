@@ -342,33 +342,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # If the Hailo half bumped, fetch the new firmware once and capture
-          # its sha256. install.sh will verify against this value, so a stale
-          # or wrong sha256 here breaks every subsequent install — refuse to
-          # commit if the fetch fails.
-          NEW_FIRMWARE_SHA256=""
-          if [ "$HAILO_CHANGED" = "true" ]; then
-            FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${NEW_HAILO_DRIVER}/FW/hailo8_fw.${NEW_HAILO_DRIVER}.bin"
-            echo "Fetching firmware to compute sha256: ${FW_URL}"
-            FW_TMP="${RUNNER_TEMP}/hailo8_fw.${NEW_HAILO_DRIVER}.bin"
-            if ! curl -fsSL --max-time 300 "$FW_URL" -o "$FW_TMP"; then
-              echo "::error title=firmware-fetch::failed to download ${FW_URL} — refusing to bump driver without a sha256"
-              exit 1
-            fi
-            if [ ! -s "$FW_TMP" ]; then
-              echo "::error title=firmware-fetch::downloaded firmware is empty (${FW_URL})"
-              exit 1
-            fi
-            NEW_FIRMWARE_SHA256=$(sha256sum "$FW_TMP" | awk '{print $1}')
-            if ! printf '%s' "$NEW_FIRMWARE_SHA256" | grep -qE '^[0-9a-f]{64}$'; then
-              echo "::error title=firmware-fetch::sha256sum returned malformed value: ${NEW_FIRMWARE_SHA256}"
-              exit 1
-            fi
-            echo "Fetched firmware sha256: ${NEW_FIRMWARE_SHA256}"
-            rm -f "$FW_TMP"
-          fi
-
-          NEW_FIRMWARE_SHA256="$NEW_FIRMWARE_SHA256" python3 - <<'PY'
+          # firmware_sha256 is no longer carried in tracked-versions.json —
+          # build.yml computes it per-release and uploads firmware.sha256 as
+          # a release asset (see #24). check-releases only updates the
+          # driver version here; the build pipeline owns the sha.
+          python3 - <<'PY'
           import json, os
           with open('.github/tracked-versions.json') as f:
               s = json.load(f)
@@ -377,7 +355,6 @@ jobs:
               s['truenas']['train']   = os.environ['NEW_TRAIN']
           if os.environ['HAILO_CHANGED'] == 'true':
               s['hailo']['driver']    = os.environ['NEW_HAILO_DRIVER']
-              s['hailo']['firmware_sha256'] = os.environ['NEW_FIRMWARE_SHA256']
           with open('.github/tracked-versions.json', 'w') as f:
               json.dump(s, f, indent=2)
               f.write('\n')
