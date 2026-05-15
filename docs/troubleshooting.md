@@ -32,7 +32,7 @@ sysext is no longer compatible.
 4. If a matching release exists, re-run the installer:
 
    ```bash
-   curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh \
+   curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh \
      | sudo bash
    ```
 
