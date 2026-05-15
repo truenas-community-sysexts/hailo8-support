@@ -328,32 +328,31 @@ fi
 # not leave /usr writable until reboot.
 USR_WAS_WRITABLE=0
 
+WORK_DIR=$(mktemp -d /tmp/hailo-install.XXXXXXXXXX)
+
 cleanup() {
     if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "${USR_DATASET:-}" ] && [ "$DRY_RUN" != "1" ]; then
         zfs set readonly=on "${USR_DATASET}" 2>/dev/null || true
         USR_WAS_WRITABLE=0
     fi
-    rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256 /tmp/hailo8_fw.bin /tmp/hailo-preinit.sh
-    rm -rf /tmp/hailo-sysext-unpack
+    [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT INT TERM
 
 # If a local path is provided, use it; otherwise download from GitHub releases
 if [ -n "$LOCAL_RAW" ]; then
-    # Reject input path == /tmp/hailo.raw (the installer's staging path):
-    # cp would refuse with "are the same file" and the EXIT trap (which
-    # always fires) would then rm -f /tmp/hailo.raw, deleting the user's
-    # input. Detect and refuse rather than risk the data loss; user can
-    # copy/move and re-run.
+    # Reject input path == staging path: cp would refuse with "are the same
+    # file" and the EXIT trap would then rm -rf the work dir, deleting the
+    # user's input. Detect and refuse rather than risk data loss.
     LOCAL_REAL=$(realpath "$LOCAL_RAW" 2>/dev/null || echo "$LOCAL_RAW")
-    STAGE_REAL=$(realpath -m /tmp/hailo.raw 2>/dev/null || echo /tmp/hailo.raw)
+    STAGE_REAL=$(realpath -m "${WORK_DIR}/hailo.raw" 2>/dev/null || echo "${WORK_DIR}/hailo.raw")
     if [ "$LOCAL_REAL" = "$STAGE_REAL" ]; then
-        echo "ERROR: input file is at /tmp/hailo.raw, which collides with the installer's staging path." >&2
-        echo "  Move or copy it to a different path (e.g. /tmp/hailo-input.raw) and re-run." >&2
+        echo "ERROR: input file collides with the installer's staging path." >&2
+        echo "  Move or copy it to a different path and re-run." >&2
         exit 2
     fi
     echo "Using local hailo.raw: $LOCAL_RAW"
-    cp "$LOCAL_RAW" /tmp/hailo.raw
+    cp "$LOCAL_RAW" "${WORK_DIR}/hailo.raw"
 else
     # Detect TrueNAS version
     VERSION=$(midclt call system.info | python3 -c "
@@ -406,16 +405,16 @@ except Exception as e:
     # Download hailo.raw and checksum
     BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
     echo "Downloading hailo.raw..."
-    curl -fSL --max-time 600 "${BASE_URL}/hailo.raw" -o /tmp/hailo.raw || { echo "ERROR: Failed to download hailo.raw"; exit 1; }
-    curl -fSL --max-time 600 "${BASE_URL}/hailo.raw.sha256" -o /tmp/hailo.raw.sha256 || { echo "ERROR: Failed to download checksum"; exit 1; }
+    curl -fSL --max-time 600 "${BASE_URL}/hailo.raw" -o "${WORK_DIR}/hailo.raw" || { echo "ERROR: Failed to download hailo.raw"; exit 1; }
+    curl -fSL --max-time 600 "${BASE_URL}/hailo.raw.sha256" -o "${WORK_DIR}/hailo.raw.sha256" || { echo "ERROR: Failed to download checksum"; exit 1; }
 
     # Validate downloads are non-empty
-    [ -s /tmp/hailo.raw ] || { echo "ERROR: hailo.raw is empty"; exit 1; }
-    [ -s /tmp/hailo.raw.sha256 ] || { echo "ERROR: checksum file is empty"; exit 1; }
+    [ -s "${WORK_DIR}/hailo.raw" ] || { echo "ERROR: hailo.raw is empty"; exit 1; }
+    [ -s "${WORK_DIR}/hailo.raw.sha256" ] || { echo "ERROR: checksum file is empty"; exit 1; }
 
     # Verify checksum
     echo "Verifying checksum..."
-    if ! (cd /tmp && sha256sum -c hailo.raw.sha256); then
+    if ! (cd "$WORK_DIR" && sha256sum -c hailo.raw.sha256); then
         echo "ERROR: Checksum verification failed!"
         exit 1
     fi
@@ -497,20 +496,20 @@ echo "HailoRT version: ${HAILO_VERSION}"
 FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VERSION}/FW/hailo8_fw.${HAILO_VERSION}.bin"
 
 echo "Downloading firmware from Hailo..."
-if ! curl -fSL --max-time 600 "$FW_URL" -o /tmp/hailo8_fw.bin; then
+if ! curl -fSL --max-time 600 "$FW_URL" -o "${WORK_DIR}/hailo8_fw.bin"; then
     echo "ERROR: Failed to download firmware from ${FW_URL}"
     echo "  Cannot install sysext without firmware — aborting."
     exit 1
 fi
-if [ ! -s /tmp/hailo8_fw.bin ]; then
-    echo "ERROR: Downloaded firmware is empty — aborting."
-    rm -f /tmp/hailo8_fw.bin
+if [ ! -s "${WORK_DIR}/hailo8_fw.bin" ]; then
+    echo "ERROR: Downloaded firmware is empty, aborting."
+    rm -f "${WORK_DIR}/hailo8_fw.bin"
     exit 1
 fi
-echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
+echo "Firmware downloaded: $(ls -lh "${WORK_DIR}/hailo8_fw.bin")"
 
 echo "Verifying firmware sha256..."
-LOCAL_FW_SHA=$(sha256sum /tmp/hailo8_fw.bin | awk '{print $1}')
+LOCAL_FW_SHA=$(sha256sum "${WORK_DIR}/hailo8_fw.bin" | awk '{print $1}')
 echo "  local sha256:  ${LOCAL_FW_SHA}"
 echo "  expected:      ${PUBLISHED_FW_SHA}"
 
@@ -521,7 +520,7 @@ if [ "$LOCAL_FW_SHA" != "$PUBLISHED_FW_SHA" ]; then
     echo "  The release's firmware.sha256 disagrees with what Hailo's S3 served." >&2
     echo "  Either the S3 binary changed under us, or the release asset is corrupt." >&2
     echo "  Open an issue on ${REPO}." >&2
-    rm -f /tmp/hailo8_fw.bin
+    rm -f "${WORK_DIR}/hailo8_fw.bin"
     exit 1
 fi
 echo "Firmware sha256 OK"
@@ -529,28 +528,23 @@ echo "Firmware sha256 OK"
 # --- Inject firmware into hailo.raw squashfs ---
 echo "Injecting firmware into hailo.raw..."
 if command -v unsquashfs &>/dev/null && command -v mksquashfs &>/dev/null; then
-    # The cleanup trap normally clears this, but a SIGKILL'd or panic'd
-    # prior run can leave it behind — unsquashfs -d refuses to overwrite.
-    rm -rf /tmp/hailo-sysext-unpack
-    unsquashfs -d /tmp/hailo-sysext-unpack /tmp/hailo.raw
-    mkdir -p /tmp/hailo-sysext-unpack/usr/lib/firmware/hailo
-    cp /tmp/hailo8_fw.bin /tmp/hailo-sysext-unpack/usr/lib/firmware/hailo/hailo8_fw.bin
+    unsquashfs -d "${WORK_DIR}/hailo-sysext-unpack" "${WORK_DIR}/hailo.raw"
+    mkdir -p "${WORK_DIR}/hailo-sysext-unpack/usr/lib/firmware/hailo"
+    cp "${WORK_DIR}/hailo8_fw.bin" "${WORK_DIR}/hailo-sysext-unpack/usr/lib/firmware/hailo/hailo8_fw.bin"
     # Pull the PREINIT script out of the unpacked sysext while we have it
-    # mounted. We need it later (~PERSIST_DIR setup), but the sysext is the
-    # source of truth — whatever hailo.raw the user installs ships with the
-    # matching preinit. Older releases (pre-bundling) won't have it; refuse
-    # rather than silently ship without persistence.
-    BUNDLED_PREINIT="/tmp/hailo-sysext-unpack/usr/lib/hailo/hailo-preinit.sh"
+    # open. The sysext is the source of truth: whatever hailo.raw the user
+    # installs ships with the matching preinit.
+    BUNDLED_PREINIT="${WORK_DIR}/hailo-sysext-unpack/usr/lib/hailo/hailo-preinit.sh"
     if [ ! -f "$BUNDLED_PREINIT" ]; then
         echo "ERROR: hailo-preinit.sh not found in sysext at /usr/lib/hailo/hailo-preinit.sh" >&2
         echo "  This hailo.raw was built before the preinit script was bundled in." >&2
         echo "  Re-fetch a current release: https://github.com/${REPO}/releases/latest" >&2
         exit 1
     fi
-    cp "$BUNDLED_PREINIT" /tmp/hailo-preinit.sh
-    chmod +x /tmp/hailo-preinit.sh
-    mksquashfs /tmp/hailo-sysext-unpack /tmp/hailo.raw -noappend -comp zstd -all-root
-    rm -rf /tmp/hailo-sysext-unpack
+    cp "$BUNDLED_PREINIT" "${WORK_DIR}/hailo-preinit.sh"
+    chmod +x "${WORK_DIR}/hailo-preinit.sh"
+    mksquashfs "${WORK_DIR}/hailo-sysext-unpack" "${WORK_DIR}/hailo.raw" -noappend -comp zstd -all-root
+    rm -rf "${WORK_DIR}/hailo-sysext-unpack"
     echo "Firmware injected into hailo.raw"
 else
     echo "ERROR: squashfs-tools not found, cannot inject firmware into sysext"
@@ -581,7 +575,7 @@ fi
 # If cp fails, the cleanup trap re-asserts readonly=on so we never
 # leave /usr writable on the failure path.
 echo "Installing new hailo.raw..."
-if_real cp /tmp/hailo.raw "${HAILO_RAW}"
+if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW}"
 
 # Restore read-only
 if [ "$DRY_RUN" = "1" ]; then
@@ -672,7 +666,7 @@ if_real mkdir -p "$PERSIST_DIR"
 
 # --- Backup hailo.raw (with firmware inside) to persistent storage ---
 echo "Backing up hailo.raw to persistent storage..."
-if_real cp /tmp/hailo.raw "${PERSIST_DIR}/hailo.raw"
+if_real cp "${WORK_DIR}/hailo.raw" "${PERSIST_DIR}/hailo.raw"
 
 # Save HailoRT version for reference
 if [ "$DRY_RUN" = "1" ]; then
@@ -690,16 +684,15 @@ else
 fi
 
 # --- Install PREINIT script to persistent storage ---
-# Source is /tmp/hailo-preinit.sh, which we extracted from the unsquashed
+# Source is ${WORK_DIR}/hailo-preinit.sh, extracted from the unsquashed
 # sysext earlier (see "Inject firmware" block). Bundling the script in the
-# sysext means the hailo.raw release artifact is self-contained — whatever
-# .raw the user installs ships with the matching preinit.
+# sysext means the hailo.raw release artifact is self-contained.
 echo "Installing PREINIT script..."
 
 # Clean up old postinit script if present
 if_real rm -f "${PERSIST_DIR}/hailo-postinit.sh"
 
-if_real cp /tmp/hailo-preinit.sh "${PERSIST_DIR}/hailo-preinit.sh"
+if_real cp "${WORK_DIR}/hailo-preinit.sh" "${PERSIST_DIR}/hailo-preinit.sh"
 if_real chmod +x "${PERSIST_DIR}/hailo-preinit.sh"
 
 # --- Register PREINIT script via midclt ---
