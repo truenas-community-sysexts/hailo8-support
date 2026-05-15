@@ -369,7 +369,7 @@ except Exception as e:
 
     # Find matching release
     echo "Searching for matching release..."
-    RELEASE_TAG=$(curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
+    RELEASE_TAG=$(curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
         | python3 -c "
 import sys, json
 try:
@@ -396,7 +396,7 @@ except Exception as e:
     if [ -z "$RELEASE_TAG" ]; then
         echo "ERROR: No release found for TrueNAS version ${VERSION}"
         echo "Available releases:"
-        curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
+        curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
             | python3 -c "import sys,json; [print(f'  {r[\"tag_name\"]}') for r in json.load(sys.stdin)]"
         exit 1
     fi
