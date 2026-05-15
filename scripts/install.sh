@@ -368,12 +368,13 @@ except Exception as e:
 
     # Find matching release
     echo "Searching for matching release..."
+    export VERSION
     RELEASE_TAG=$(curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
         | python3 -c "
-import sys, json
+import sys, json, os
 try:
     releases = json.load(sys.stdin)
-    version = '${VERSION}'
+    version = os.environ['VERSION']
     # Anchor the match: v<version>-* prevents 25.10.3 from matching 25.10.3.1.
     prefix = f'v{version}-'
     matches = [r for r in releases if r.get('tag_name', '').startswith(prefix)]
