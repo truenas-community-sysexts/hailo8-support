@@ -816,6 +816,24 @@ jobs:
             const title = `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`;
             const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
 
+            // Ensure the label exists (idempotent — no-ops if already present).
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'hardware-test',
+                color: 'FBCA04',
+                description: 'Auto-build awaiting hardware verification',
+              });
+              console.log('Created hardware-test label');
+            } catch (e) {
+              if (e.status === 422) {
+                console.log('hardware-test label already exists');
+              } else {
+                throw e;
+              }
+            }
+
             // Skip if an open issue already exists for this release tag.
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
