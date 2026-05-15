@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-REPO="${HAILO_REPO:-scyto/truenas-hailo}"
+REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 

@@ -2,7 +2,7 @@
 
 ## Build Process
 
-Unlike the [NVIDIA sysext](https://github.com/scyto/truenas-nvidia-blackwell) which requires the full TrueNAS `scale-build` pipeline (~5-6 hours), this project compiles the Hailo driver standalone (~15-30 minutes):
+This project compiles the Hailo driver standalone (~15-30 minutes):
 
 1. Downloads the TrueNAS ISO for the target version
 2. Extracts kernel headers from the nested rootfs squashfs

@@ -8,8 +8,6 @@ This project builds a systemd-sysext package (`hailo.raw`) containing the Hailo-
 
 ## Why Not scale-build?
 
-The [NVIDIA sysext](https://github.com/scyto/truenas-nvidia-blackwell) uses TrueNAS's `scale-build` system because NVIDIA is integrated into TrueNAS's build manifest — it requires the full 126-package build to produce the rootfs chroot in which the NVIDIA installer runs.
-
 Hailo-8 is **not** in the TrueNAS build manifest. It's a standard out-of-tree kernel module that only needs:
 - Kernel headers matching the target TrueNAS kernel
 - Standard build toolchain (gcc, make, cmake)
@@ -315,23 +313,3 @@ Enumerates tags reachable from `hailort-drivers`'s `hailo8` branch (not `master`
 ### Consolidated commit and dispatch
 
 If anything moved, the workflow writes the state file in one commit, runs `sync-build-defaults.sh` to keep `build.yml`'s `workflow_dispatch` defaults aligned, and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge — a human verifies the build on Hailo-8 hardware and promotes it via the GitHub UI.
-
-## Comparison with NVIDIA Sysext
-
-| Aspect | NVIDIA Sysext | Hailo Sysext |
-| --- | --- | --- |
-| Build system | Full scale-build (126 packages) | Standalone (kernel module + cmake) |
-| Build time | ~5-6 hours (cached: ~1.5h) | ~15-30 minutes (cached: ~5 min) |
-| Build runner | ubuntu-22.04 | ubuntu-22.04 |
-| Jobs | 2 (packages + update) | 1 |
-| Caching | 3 granular caches (~4.2 GB) | 3 caches (ISO + headers + hailort) |
-| Kernel module | Part of NVIDIA .run installer | `make` against kernel headers |
-| Compiler | Default GCC | gcc-12 (matches kernel) |
-| Userspace | NVIDIA apt packages | cmake build from source |
-| Firmware | Included in sysext | Downloaded at install time (proprietary) |
-| Sysext activation | `systemd-sysext merge`* | Symlink in `/run/extensions/` + refresh |
-| Module loading | `modprobe` | `insmod` (read-only `/lib/modules`) |
-| scale-build submodule | Required | Not needed |
-| MIG support | Yes (multi-instance GPU) | N/A |
-
-*The NVIDIA sysext likely has the same activation issue — `systemd-sysext merge` doesn't work on TrueNAS without the symlink pattern.

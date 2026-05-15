@@ -9,7 +9,7 @@ A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator s
 | [Quick Start](#quick-start) | Install, verify, uninstall |
 | [docs/install.md](docs/install.md) | Install options, specific versions, persistence, scripts reference |
 | [docs/build.md](docs/build.md) | Build process, firmware handling, automated updates, custom builds |
-| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints, NVIDIA comparison |
+| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Recovery from kernel-mismatch errors after TrueNAS upgrades |
 
 ## What's Included
@@ -53,13 +53,13 @@ This sysext builds the `hailo_pci` kernel module from the **`hailo8` branch** of
 Auto-detects your TrueNAS version, downloads the matching release, fetches firmware from Hailo, and sets up persistence:
 
 ```bash
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh | sudo bash
 ```
 
 With an explicit pool for persistence:
 
 ```bash
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh -o install.sh
 sudo bash install.sh --pool=fast
 ```
 
@@ -72,7 +72,7 @@ sudo bash install.sh --pool=fast
 Run the built-in status probe:
 
 ```bash
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh | sudo bash -s -- --check
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh | sudo bash -s -- --check
 ```
 
 Or check manually:
@@ -86,7 +86,7 @@ sudo hailortcli fw-control identify     # Firmware responding
 ### Uninstall
 
 ```bash
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/uninstall.sh | sudo bash
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/uninstall.sh | sudo bash
 ```
 
 ## Using with Frigate
@@ -140,8 +140,6 @@ MIT — see [LICENSE](LICENSE).
 The Hailo-8 firmware downloaded during installation is proprietary and subject to Hailo's EULA.
 
 ## Credits
-
-Build approach inspired by [truenas-nvidia-blackwell](https://github.com/scyto/truenas-nvidia-blackwell).
 
 Hailo-8 driver source: [hailo-ai/hailort-drivers](https://github.com/hailo-ai/hailort-drivers) and [hailo-ai/hailort](https://github.com/hailo-ai/hailort).
 
