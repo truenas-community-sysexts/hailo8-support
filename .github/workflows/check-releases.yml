@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # PAT (admin actor) is required to push tracked-versions.json back
           # to main — the default GITHUB_TOKEN runs as github-actions[bot],
@@ -148,7 +148,7 @@ jobs:
           if [ "$NUM_MATCHES" -gt 1 ]; then
             echo "::error title=TrueNAS check::version ${LATEST_VERSION} appears under multiple trains — refusing to guess"
             echo "Matched trains:" >&2
-            printf '  %s\n' $MATCHED_TRAINS >&2
+            printf '%s' "$MATCHED_TRAINS" | sed 's/^/  /' >&2
             exit 1
           fi
 
@@ -176,9 +176,11 @@ jobs:
           fi
 
           echo "New TrueNAS release detected, train resolved, ISO is published."
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "train=${NEW_TRAIN}" >> "$GITHUB_OUTPUT"
+          {
+            echo "changed=true"
+            echo "version=${LATEST_VERSION}"
+            echo "train=${NEW_TRAIN}"
+          } >> "$GITHUB_OUTPUT"
 
       # ─────────────────────────────────────────────────────────────────────
       # Hailo check: enumerate tags reachable from hailort-drivers' hailo8
@@ -422,7 +424,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       - name: Trigger build
         if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             await github.rest.actions.createWorkflowDispatch({

@@ -437,14 +437,15 @@ PUBLISHED_FW_SHA=""
 
 if [ -n "${RELEASE_TAG:-}" ]; then
     # Extract the hailo version from tags like:
-    #   v25.10.2.1-hailo4.20.0            (legacy, pre-issue-#17)
-    #   v25.10.3-hailo4.21.0-g7854543     (current, SHA-suffixed)
-    # The capture stops at the first non-[0-9.] char after `hailo`, so the
-    # `-g<sha>` suffix (or any future suffix) is left out of $HAILO_VERSION.
+    #   v25.10.2.1-hailo4.20.0                 (legacy, pre-issue-#17)
+    #   v25.10.3-hailo4.21.0-g7854543          (legacy, SHA-suffixed)
+    #   v25.10.3.1-hailo4.21.0-r23             (current, run-number suffix)
+    # The capture stops at the first non-[0-9.] char after `hailo`, so any
+    # `-r<run>` / `-g<sha>` suffix is left out of $HAILO_VERSION.
     HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9][0-9.]*\).*/\1/p')
     if [ -z "$HAILO_VERSION" ]; then
         echo "ERROR: Could not parse HailoRT version from release tag '${RELEASE_TAG}'." >&2
-        echo "  Expected format: v<truenas>-hailo<driver>[-g<sha>-r<run>]" >&2
+        echo "  Expected format: v<truenas>-hailo<driver>[-r<run>]" >&2
         exit 1
     fi
 
