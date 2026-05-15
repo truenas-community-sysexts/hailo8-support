@@ -50,6 +50,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   resolve:
@@ -808,3 +809,55 @@ jobs:
           make_latest: ${{ needs.resolve.outputs.mark_latest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create hardware-test issue for auto-build
+        if: needs.resolve.outputs.mark_latest == 'false'
+        uses: actions/github-script@v9
+        env:
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
+          HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
+          SHORT_SHA: ${{ steps.build_id.outputs.sha }}
+          RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
+        with:
+          script: |
+            const tag = `v${process.env.TRUENAS_VERSION}-hailo${process.env.HAILO_DRIVER}-g${process.env.SHORT_SHA}-r${process.env.RUN_NUMBER}`;
+            const title = `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`;
+            const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
+
+            // Skip if an open issue already exists for this release tag.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'hardware-test',
+              per_page: 100,
+            });
+            if (existing.data.some(i => i.title.includes(tag))) {
+              console.log(`Open hardware-test issue already exists for ${tag} — skipping`);
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ['hardware-test'],
+              body: [
+                `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
+                ``,
+                `**Release:** [${tag}](${releaseUrl})`,
+                `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
+                `**HailoRT:** ${process.env.HAILO_DRIVER}`,
+                ``,
+                `### Test checklist`,
+                `- [ ] Download and install on a TrueNAS system with a Hailo-8 card`,
+                `- [ ] Confirm \`hailortcli fw-control identify\` succeeds`,
+                `- [ ] Confirm Frigate detects the Hailo device`,
+                `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
+                ``,
+                `### Promote`,
+                `Once verified, go to the [release page](${releaseUrl}) and click **Set as latest**.`,
+                `Then close this issue.`,
+              ].join('\n'),
+            });
+            console.log(`Created hardware-test issue for ${tag}`);
