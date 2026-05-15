@@ -44,10 +44,14 @@ HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
 SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
 
 # Read which repo this install came from (written by install.sh)
-HAILO_REPO="scyto/truenas-hailo"
+HAILO_REPO="truenas-community-sysexts/hailo8-support"
 if [ -f "${PERSIST_DIR}/.hailo-repo" ]; then
-    HAILO_REPO=$(cat "${PERSIST_DIR}/.hailo-repo" 2>/dev/null) || HAILO_REPO="scyto/truenas-hailo"
-    [ -z "$HAILO_REPO" ] && HAILO_REPO="scyto/truenas-hailo"
+    HAILO_REPO=$(cat "${PERSIST_DIR}/.hailo-repo" 2>/dev/null) || HAILO_REPO="truenas-community-sysexts/hailo8-support"
+    [ -z "$HAILO_REPO" ] && HAILO_REPO="truenas-community-sysexts/hailo8-support"
+    # Migrate stale slug left over from installs predating the org move.
+    if [ "$HAILO_REPO" = "scyto/truenas-hailo" ]; then
+        HAILO_REPO="truenas-community-sysexts/hailo8-support"
+    fi
 fi
 
 if [ ! -f "$HAILO_RAW_BACKUP" ]; then

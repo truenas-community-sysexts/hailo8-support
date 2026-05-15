@@ -22,7 +22,12 @@ fi
 # Fallback: stdin path. Resolve the matching restore.sh from the latest
 # release of the fork that shipped this script. HAILO_REPO is honored to
 # match install.sh's --repo= override.
-REPO="${HAILO_REPO:-scyto/truenas-hailo}"
+REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
+# Repo moved from scyto/truenas-hailo; redirect stale env-var/docs to the new slug.
+if [ "$REPO" = "scyto/truenas-hailo" ]; then
+    echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'." >&2
+    REPO="truenas-community-sysexts/hailo8-support"
+fi
 echo "uninstall.sh: fetching restore.sh from ${REPO}/releases/latest..." >&2
 TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT

@@ -8,14 +8,14 @@ To install from a specific release:
 
 ```bash
 # Download install.sh from a specific release tag
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/download/v25.10.2.1-hailo4.21.0/install.sh | sudo bash
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/v25.10.2.1-hailo4.21.0/install.sh | sudo bash
 ```
 
 Or download `hailo.raw` manually and install it:
 
 ```bash
 # Download hailo.raw from a specific release
-curl -fSL https://github.com/scyto/truenas-hailo/releases/download/v25.10.2.1-hailo4.21.0/hailo.raw -o /tmp/hailo.raw
+curl -fSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/v25.10.2.1-hailo4.21.0/hailo.raw -o /tmp/hailo.raw
 sudo bash install.sh /tmp/hailo.raw
 ```
 
@@ -27,7 +27,7 @@ sudo bash install.sh /tmp/hailo.raw
 
 | Option | Description |
 | --- | --- |
-| `--repo=OWNER/NAME` | GitHub repo for releases (default: `scyto/truenas-hailo`). Also settable via `HAILO_REPO` env var. |
+| `--repo=OWNER/NAME` | GitHub repo for releases (default: `truenas-community-sysexts/hailo8-support`). Also settable via `HAILO_REPO` env var. |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
 | `--persist-path=PATH` | Exact path for persistent config directory |
 | `--check` | Probe an existing install (read-only) and report status |
@@ -42,7 +42,7 @@ sudo bash install.sh /tmp/hailo.raw
 # Probe an existing install
 sudo ./install.sh --check
 # Or via curl
-curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh | sudo bash -s -- --check
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh | sudo bash -s -- --check
 ```
 
 **`--dry-run`** performs every read/network/validation step (release lookup, sha256 verify, firmware download, squashfs unpack/repack) but skips every command that mutates the running system. Each skipped mutation is logged as `[dry-run] would: <command>`.
