@@ -55,8 +55,9 @@ jobs:
         env:
           CURRENT_VERSION: ${{ steps.tracked.outputs.truenas_version }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
-      #   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.CHECK_BUILDS }}
+          # Public scale-build tag listing — default GITHUB_TOKEN's 5000/hr
+          # quota is plenty. CHECK_BUILDS PAT is reserved for the push to main.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
           echo "Currently tracked: ${CURRENT_VERSION} on train ${CURRENT_TRAIN}"
