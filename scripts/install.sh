@@ -217,7 +217,7 @@ if_real() {
 }
 
 # REPO can be overridden via --repo=OWNER/NAME or HAILO_REPO env var.
-REPO="${HAILO_REPO:-scyto/truenas-hailo}"
+REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
 SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
 HAILO_RAW="${SYSEXT_DIR}/hailo.raw"
 
@@ -268,7 +268,7 @@ for arg in "$@"; do
             echo "Usage: sudo ./install.sh [OPTIONS] [path-to-hailo.raw]"
             echo ""
             echo "Options:"
-            echo "  --repo=OWNER/NAME             GitHub repo to download release from (default: scyto/truenas-hailo)"
+            echo "  --repo=OWNER/NAME             GitHub repo to download release from (default: truenas-community-sysexts/hailo8-support)"
             echo "                                Can also be set via HAILO_REPO env var."
             echo "  --pool=NAME                   ZFS pool for persistent config (e.g., fast)"
             echo "  --persist-path=PATH           Exact path for persistent config"
@@ -307,6 +307,14 @@ done
 if [ "$CHECK_MODE" = "1" ] && [ "$DRY_RUN" = "1" ]; then
     echo "ERROR: --check and --dry-run are mutually exclusive" >&2
     exit 2
+fi
+
+# The project moved from scyto/truenas-hailo to truenas-community-sysexts/hailo8-support.
+# Catch the old slug if it arrives via --repo=, HAILO_REPO env, or stale docs/configs,
+# and redirect transparently rather than 404 on releases lookup.
+if [ "$REPO" = "scyto/truenas-hailo" ]; then
+    echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'."
+    REPO="truenas-community-sysexts/hailo8-support"
 fi
 
 if [ "$CHECK_MODE" = "1" ]; then
