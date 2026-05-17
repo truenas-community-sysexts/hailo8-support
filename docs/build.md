@@ -34,7 +34,7 @@ A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitor
 - **TrueNAS half**: looks for new TrueNAS SCALE releases (highest stable `TS-*` tag in `truenas/scale-build`). When the matching ISO is live at `download.truenas.com`, it stages a bump of `truenas.version` (and `truenas.train` on a train rollover).
 - **HailoRT half**: looks for new tags reachable from `hailort-drivers`'s `hailo8` branch, capped at the version pinned in Frigate's `docker/main/install_hailort.sh` on `dev`. When the cap allows, it stages a bump of `hailo.driver`.
 
-If anything moved, the workflow writes the file in one commit, syncs `build.yml`'s dispatch defaults, and dispatches one build. Auto-builds publish releases without the "Latest" badge -- verify the build on Hailo-8 hardware, then promote it to Latest manually in the GitHub UI.
+If anything moved, the workflow writes the file in one commit and dispatches one build. Auto-builds publish releases without the "Latest" badge -- verify the build on Hailo-8 hardware, then promote it to Latest manually in the GitHub UI.
 
 ## Custom Builds
 
@@ -59,4 +59,4 @@ If you need a build for a TrueNAS version or HailoRT version that doesn't have a
 
 ### Version Defaults
 
-The `workflow_dispatch` inputs default to the currently tracked combination from `.github/tracked-versions.json` plus the runner resolved from TrueNAS's Debian release. The defaults are kept in lockstep automatically: every auto-bump commit invokes `.github/scripts/sync-build-defaults.sh` to rewrite `build.yml`'s defaults alongside the state file, so a manual "Run workflow" always pre-fills the latest known-good combo. You can still override any field at dispatch time if you want a different target.
+The `workflow_dispatch` inputs default to blank. When left blank, the build's `resolve` job reads `.github/tracked-versions.json` at runtime and uses the latest tracked combination (plus auto-resolving the runner from TrueNAS's Debian release). A manual "Run workflow" therefore always targets the latest known-good combo without any extra sync step. You can override any field at dispatch time if you want a different target.

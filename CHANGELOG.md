@@ -32,7 +32,7 @@ Changes since the initial project baseline, organized by area.
 - **Frigate-pin gate on Hailo bumps.** Caps the candidate version at the `hailo_version` pinned in Frigate's `docker/main/install_hailort.sh` on the `dev` branch.
 - **`mark_latest` input on `build.yml`.** Auto-built releases publish without claiming "Latest"; a human promotes after hardware verification.
 - **Build runner resolved per-build.** `runs-on:` is resolved from TrueNAS's Debian release via `.github/scripts/resolve-runner.sh`, no longer hardcoded.
-- **Auto-synced `workflow_dispatch` defaults.** Each auto-bump commit rewrites `build.yml`'s `workflow_dispatch` defaults via `.github/scripts/sync-build-defaults.sh`.
+- **Runtime-resolved `workflow_dispatch` defaults.** `build.yml`'s dispatch inputs default to blank; the build's `resolve` job reads `.github/tracked-versions.json` at runtime when no explicit value is given, so manual dispatches always target the latest tracked combo without requiring `build.yml` rewrites on each bump.
 - **Lint workflow.** `shellcheck --severity=warning` on all shell scripts, `actionlint` on workflow YAML, and `tracked-versions.json` shape validation.
 - **Build-time smoke test.** Before publishing, `build.yml` asserts required files exist, ELF binaries are real, and `hailo_pci.ko`'s vermagic matches the target kernel.
 - **Richer release notes.** Includes real kernel version, runner image, build commit SHA, and Frigate compatibility link.
