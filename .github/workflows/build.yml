@@ -715,7 +715,8 @@ jobs:
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
         run: |
           set -euo pipefail
-          FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_DRIVER}/FW/hailo8_fw.${HAILO_DRIVER}.bin"
+          source .github/scripts/hailo-constants.sh
+          FW_URL=$(hailo_fw_url "$HAILO_DRIVER")
           echo "Fetching firmware: ${FW_URL}"
           if ! curl -fsSL --max-time 300 "$FW_URL" -o /tmp/hailo8_fw.bin; then
             echo "::error title=firmware-fetch::failed to download ${FW_URL} — refusing to publish without a firmware.sha256"
