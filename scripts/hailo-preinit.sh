@@ -82,7 +82,7 @@ if [ "$NEED_COPY" = true ]; then
     systemd-sysext unmerge 2>/dev/null || true
 
     log "Making /usr writable..."
-    USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
+    USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || true
     if [ -n "$USR_DATASET" ]; then
         zfs set readonly=off "$USR_DATASET"
         USR_WAS_WRITABLE=1
