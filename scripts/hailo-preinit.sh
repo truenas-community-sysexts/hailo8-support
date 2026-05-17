@@ -34,16 +34,22 @@ trap restore_usr_readonly EXIT INT TERM
 # iterating once with the literal glob string). Localized via subshell-free
 # save/restore so the rest of the script keeps default globbing.
 PERSIST_DIR=""
+PERSIST_DIRS=()
 shopt -s nullglob
 for d in /mnt/*/.config/hailo; do
-    [ -d "$d" ] && PERSIST_DIR="$d" && break
+    [ -d "$d" ] && PERSIST_DIRS+=("$d")
 done
 shopt -u nullglob
 
-if [ -z "$PERSIST_DIR" ]; then
+if [ ${#PERSIST_DIRS[@]} -eq 0 ]; then
     log "No persistent config found at /mnt/*/.config/hailo/, nothing to do"
     exit 0
 fi
+if [ ${#PERSIST_DIRS[@]} -gt 1 ]; then
+    log "WARNING: hailo config found on ${#PERSIST_DIRS[@]} pools: ${PERSIST_DIRS[*]}"
+    log "WARNING: using ${PERSIST_DIRS[0]} (alphabetically first). Remove duplicates to silence this warning."
+fi
+PERSIST_DIR="${PERSIST_DIRS[0]}"
 
 HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
 SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
