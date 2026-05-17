@@ -415,13 +415,24 @@ jobs:
           # Detect the GCC major version the kernel was compiled with.
           # Prefer include/config/cc-version-text (plain-text, one line);
           # fall back to include/generated/compile.h (LINUX_COMPILER macro).
+          # Handles both "gcc-12 (Debian ...)" and "gcc (Debian 12.2.0-14) 12.2.0".
           HEADER_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
           GCC_VER=""
+          extract_gcc_ver() {
+            local file="$1"
+            # Try hyphenated form first: "gcc-12"
+            local ver
+            ver=$(grep -oP 'gcc-\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+            # Try "gcc (Toolchain X.Y.Z) X.Y.Z" form: extract major from final version
+            ver=$(grep -oP 'gcc\s+\(.*?\)\s+\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+          }
           if [ -f "${HEADER_DIR}/include/config/cc-version-text" ]; then
-            GCC_VER=$(grep -oP 'gcc-\K[0-9]+' "${HEADER_DIR}/include/config/cc-version-text" | head -1)
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/config/cc-version-text")
           fi
           if [ -z "$GCC_VER" ] && [ -f "${HEADER_DIR}/include/generated/compile.h" ]; then
-            GCC_VER=$(grep -oP 'gcc-\K[0-9]+' "${HEADER_DIR}/include/generated/compile.h" | head -1)
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/generated/compile.h")
           fi
           if [ -z "$GCC_VER" ]; then
             echo "::warning title=gcc-version::could not detect GCC version from kernel headers, defaulting to gcc-12"
@@ -759,7 +770,7 @@ jobs:
           # body links to the Frigate install_hailort.sh on the dev branch (the
           # canonical consumer per CLAUDE.md) so the human gating "Set as latest"
           # can confirm the build matches what Frigate is actually shipping.
-          envsubst > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
           ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
