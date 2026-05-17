@@ -11,7 +11,7 @@
 # handling is needed.
 
 
-set -uo pipefail
+set -euo pipefail
 
 log() {
     echo "[hailo-preinit] $*"
