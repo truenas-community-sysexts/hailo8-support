@@ -658,6 +658,11 @@ jobs:
 
           echo "=== smoke-test: required paths ==="
           require_file "usr/lib/extension-release.d/extension-release.hailo"
+          EXT_REL="${SMOKE_TMP}/extract/usr/lib/extension-release.d/extension-release.hailo"
+          if [ -f "$EXT_REL" ] && ! grep -qx 'ID=_any' "$EXT_REL"; then
+            echo "::error title=smoke-test::extension-release.hailo does not contain 'ID=_any'; got: $(cat "$EXT_REL")"
+            fail=1
+          fi
           require_file "usr/lib/modules/${REAL_KVER}/extra/hailo_pci.ko"
           require_elf  "usr/bin/hailortcli"
           require_file "usr/lib/hailo/hailo-preinit.sh"
