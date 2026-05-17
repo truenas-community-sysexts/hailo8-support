@@ -92,6 +92,12 @@ The install script selects a pool in this order:
 
 The PREINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`, so it works even if the pool name changes.
 
+## Device Permissions
+
+The sysext ships a udev rule (`51-hailo-udev.rules`) that sets `/dev/hailo*` to mode `0666` (world read/write). This is intentional: Docker containers typically run as non-root and need direct device access without extra group configuration. On a single-user TrueNAS box this is fine.
+
+If you want tighter permissions, edit the rule in the sysext to use `GROUP="video"` with `MODE="0660"` and add your container user to the `video` group. Note that the sysext is a squashfs image, so you'd need to unpack, edit, and repack it (or patch the rule in the build workflow for a permanent change).
+
 ## Scripts Reference
 
 | Script | Purpose |
