@@ -46,7 +46,7 @@ on:
       mark_latest:
         type: string
         required: false
-        default: 'true'
+        default: 'false'
 
 permissions:
   contents: write
