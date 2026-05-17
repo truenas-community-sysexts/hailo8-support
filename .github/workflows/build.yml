@@ -174,9 +174,20 @@ jobs:
           TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
           VERSION="${{ needs.resolve.outputs.truenas_version }}"
           ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          SHA_URL="${ISO_URL}.sha256"
           echo "Downloading: ${ISO_URL}"
           curl -fSL "$ISO_URL" -o /tmp/truenas.iso
           ls -lh /tmp/truenas.iso
+
+          echo "Verifying ISO checksum..."
+          curl -fSL "$SHA_URL" -o /tmp/truenas.iso.sha256
+          EXPECTED=$(awk '{print $1}' /tmp/truenas.iso.sha256)
+          ACTUAL=$(sha256sum /tmp/truenas.iso | awk '{print $1}')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error title=iso-checksum::SHA256 mismatch. Expected: ${EXPECTED}, got: ${ACTUAL}"
+            exit 1
+          fi
+          echo "ISO checksum verified: ${ACTUAL}"
 
       - name: Save TrueNAS ISO to cache
         if: steps.iso-cache.outputs.cache-hit != 'true'
