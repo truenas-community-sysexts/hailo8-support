@@ -43,6 +43,8 @@ if not isinstance(data, dict):
 ver_re = re.compile(r"^\d+(\.\d+){1,4}$")
 # Hailo uses strict semver: X.Y.Z only (no 4-part variants).
 hailo_ver_re = re.compile(r"^\d+\.\d+\.\d+$")
+# Train names are capitalized words (Goldeye, Fangtooth, etc.)
+train_re = re.compile(r"^[A-Z][a-zA-Z]+$")
 
 truenas = data.get("truenas")
 if not isinstance(truenas, dict):
@@ -53,8 +55,8 @@ if not isinstance(tn_version, str) or not ver_re.match(tn_version):
     fail(f"'truenas.version' missing or malformed (got {tn_version!r}); expected X.Y[.Z[.W[.V]]]")
 
 tn_train = truenas.get("train")
-if not isinstance(tn_train, str) or not tn_train.strip():
-    fail(f"'truenas.train' missing or empty (got {tn_train!r})")
+if not isinstance(tn_train, str) or not train_re.match(tn_train):
+    fail(f"'truenas.train' missing or malformed (got {tn_train!r}); expected capitalized word (e.g. Goldeye)")
 
 hailo = data.get("hailo")
 if not isinstance(hailo, dict):
