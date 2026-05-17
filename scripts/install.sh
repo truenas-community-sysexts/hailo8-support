@@ -102,9 +102,11 @@ do_check() {
 
     # 5. Persistent config dir
     local persist_dir=""
+    shopt -s nullglob
     for d in /mnt/*/.config/hailo; do
         [ -d "$d" ] && persist_dir="$d" && break
     done
+    shopt -u nullglob
     if [ -n "$persist_dir" ]; then
         record_pass "Persistent config at ${persist_dir}"
     else

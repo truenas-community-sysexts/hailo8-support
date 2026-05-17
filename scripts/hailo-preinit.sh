@@ -30,10 +30,15 @@ restore_usr_readonly() {
 trap restore_usr_readonly EXIT INT TERM
 
 # --- Find persistent config via glob ---
+# nullglob: if no pool matches, the loop body never runs (instead of
+# iterating once with the literal glob string). Localized via subshell-free
+# save/restore so the rest of the script keeps default globbing.
 PERSIST_DIR=""
+shopt -s nullglob
 for d in /mnt/*/.config/hailo; do
     [ -d "$d" ] && PERSIST_DIR="$d" && break
 done
+shopt -u nullglob
 
 if [ -z "$PERSIST_DIR" ]; then
     log "No persistent config found at /mnt/*/.config/hailo/, nothing to do"
