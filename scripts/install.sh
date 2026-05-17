@@ -100,17 +100,13 @@ do_check() {
             "the PREINIT script merges it on boot; check 'systemctl status systemd-sysext'"
     fi
 
-    # 5. Persistent config dir
+    # 5. Persistent config dir (same resolver as install path)
     local persist_dir=""
-    shopt -s nullglob
-    for d in /mnt/*/.config/hailo; do
-        [ -d "$d" ] && persist_dir="$d" && break
-    done
-    shopt -u nullglob
-    if [ -n "$persist_dir" ]; then
+    if resolve_persist_dir; then
+        persist_dir="$PERSIST_DIR"
         record_pass "Persistent config at ${persist_dir}"
     else
-        record_fail "No persistent config under /mnt/*/.config/hailo/" \
+        record_fail "No persistent config resolved" \
             "re-run install.sh with --pool=NAME or --persist-path=PATH"
     fi
 
@@ -216,6 +212,85 @@ if_real() {
     else
         "$@"
     fi
+}
+
+# resolve_persist_dir — determine where persistent config lives.
+# Priority: --persist-path > --pool > existing config dir > only-data-pool
+#         > interactive prompt (multi-pool) > error (no tty + ambiguous)
+# Sets PERSIST_DIR on success; prints to stderr and returns 1 on failure.
+resolve_persist_dir() {
+    PERSIST_DIR=""
+    local d p
+    local -a existing=() pools=() choices=()
+    local header n i
+
+    if [ -n "${PERSIST_PATH:-}" ]; then
+        PERSIST_DIR="$PERSIST_PATH"
+        return 0
+    fi
+    if [ -n "${POOL_NAME:-}" ]; then
+        PERSIST_DIR="/mnt/${POOL_NAME}/.config/hailo"
+        return 0
+    fi
+
+    shopt -s nullglob
+    for d in /mnt/*/.config/hailo; do
+        [ -d "$d" ] && existing+=("$d")
+    done
+    shopt -u nullglob
+
+    if [ "${#existing[@]}" -eq 1 ]; then
+        PERSIST_DIR="${existing[0]}"
+        echo "Re-using existing config: $PERSIST_DIR"
+        return 0
+    fi
+
+    while IFS= read -r p; do
+        [ -n "$p" ] && [ "$p" != "boot-pool" ] && pools+=("$p")
+    done < <(zpool list -H -o name 2>/dev/null)
+
+    if [ "${#existing[@]}" -eq 0 ] && [ "${#pools[@]}" -eq 0 ]; then
+        echo "ERROR: No ZFS pool found (excluding boot-pool). Cannot set up persistence." >&2
+        echo "  Re-run with --pool=<name> or --persist-path=/mnt/<pool>/<path>" >&2
+        return 1
+    fi
+
+    if [ "${#existing[@]}" -eq 0 ] && [ "${#pools[@]}" -eq 1 ]; then
+        PERSIST_DIR="/mnt/${pools[0]}/.config/hailo"
+        echo "Auto-selected pool: ${pools[0]} → $PERSIST_DIR"
+        return 0
+    fi
+
+    if [ "${#existing[@]}" -gt 1 ]; then
+        header="Found existing hailo configs on multiple pools:"
+        choices=("${existing[@]}")
+    else
+        header="Multiple data pools available (no existing config):"
+        for p in "${pools[@]}"; do
+            choices+=("/mnt/${p}/.config/hailo")
+        done
+    fi
+
+    if ! { : </dev/tty; } 2>/dev/null; then
+        echo "ERROR: $header" >&2
+        echo "  No controlling terminal. Pass --pool=<name> or --persist-path=<path>." >&2
+        return 1
+    fi
+
+    echo "$header"
+    for i in "${!choices[@]}"; do
+        echo "  [$((i+1))] ${choices[$i]}"
+    done
+    while true; do
+        printf 'Pick one (1-%d): ' "${#choices[@]}"
+        read -r n </dev/tty || return 1
+        if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#choices[@]}" ]; then
+            PERSIST_DIR="${choices[$((n-1))]}"
+            echo "Selected: $PERSIST_DIR"
+            return 0
+        fi
+        echo "  Invalid. Enter 1-${#choices[@]}."
+    done
 }
 
 # REPO can be overridden via --repo=OWNER/NAME or HAILO_REPO env var.
@@ -653,29 +728,9 @@ echo ""
 echo "=== Setting up persistence ==="
 
 # --- Detect persistent storage pool ---
-if [ -n "$PERSIST_PATH" ]; then
-    PERSIST_DIR="$PERSIST_PATH"
-elif [ -n "$POOL_NAME" ]; then
-    PERSIST_DIR="/mnt/${POOL_NAME}/.config/hailo"
-else
-    # Auto-detect: first pool that isn't boot-pool
-    POOL_NAME=$(zpool list -H -o name 2>/dev/null | grep -v '^boot-pool$' | head -1)
-    if [ -n "$POOL_NAME" ]; then
-        PERSIST_DIR="/mnt/${POOL_NAME}/.config/hailo"
-        echo "Auto-detected pool: ${POOL_NAME}"
-    else
-        # Hard fail rather than exit 0: persistence isn't optional. Without
-        # it, the next reboot wipes the sysext (no PREINIT registered, no
-        # backup on a persistent pool) and the Hailo device disappears. The
-        # `curl | sudo bash` flow makes a printed warning easy to miss —
-        # especially after the earlier "Installation complete" line.
-        echo "ERROR: No ZFS pool found (excluding boot-pool). Cannot set up persistence." >&2
-        echo "  The sysext is loaded for this session but will NOT survive a reboot." >&2
-        echo "  Re-run with one of:" >&2
-        echo "    sudo ./install.sh --pool=<name>" >&2
-        echo "    sudo ./install.sh --persist-path=/mnt/<pool>/<path>" >&2
-        exit 1
-    fi
+if ! resolve_persist_dir; then
+    echo "  The sysext is loaded for this session but will NOT survive a reboot." >&2
+    exit 1
 fi
 
 echo "Persistent config directory: ${PERSIST_DIR}"
