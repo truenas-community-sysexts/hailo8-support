@@ -556,10 +556,25 @@ fi
 echo ""
 echo "=== Installing hailo.raw ==="
 
-# Remove hailo from sysext before modifying
+# Remove hailo from sysext before modifying. If nothing is currently merged,
+# unmerge exits non-zero with "No extensions found" on stderr, which is fine.
+# A real failure (overlay held open by another process) must not be swallowed.
 echo "Removing old hailo sysext symlink..."
 if_real rm -f /run/extensions/hailo.raw
-if_real systemd-sysext unmerge 2>/dev/null || true
+if [ "$DRY_RUN" != "1" ]; then
+    UNMERGE_ERR=$(systemd-sysext unmerge 2>&1) || {
+        if printf '%s' "$UNMERGE_ERR" | grep -qi "no extensions"; then
+            true  # nothing was merged, harmless
+        else
+            echo "ERROR: systemd-sysext unmerge failed: ${UNMERGE_ERR}" >&2
+            echo "  Another process may be holding the overlay open." >&2
+            echo "  Identify it with: lsof /usr/lib/firmware/hailo" >&2
+            exit 1
+        fi
+    }
+else
+    echo "[dry-run] would: systemd-sysext unmerge"
+fi
 
 # Make /usr writable
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr"; exit 1; }
