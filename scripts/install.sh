@@ -369,37 +369,36 @@ except Exception as e:
     # Find matching release
     echo "Searching for matching release..."
     export VERSION
-    RELEASE_TAG=$(curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
+    RELEASE_TAG=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
         | python3 -c "
 import sys, json, os
 try:
-    releases = json.load(sys.stdin)
-    version = os.environ['VERSION']
-    # Anchor the match: v<version>-* prevents 25.10.3 from matching 25.10.3.1.
-    prefix = f'v{version}-'
-    matches = [r for r in releases if r.get('tag_name', '').startswith(prefix)]
-    if not matches:
-        print('', end='')
-    else:
-        # Multiple matches are expected: with SHA-suffixed tags every build
-        # produces a new release for the same version pair. Pick the most
-        # recently published. GitHub's /releases endpoint returns newest-first
-        # by default, but sorting explicitly here makes the selection a
-        # property of this code rather than of an undocumented API ordering.
-        matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
-        print(matches[0]['tag_name'], end='')
-except Exception as e:
-    print(f'ERROR: {e}', file=sys.stderr)
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    print('Failed to parse GitHub API response', file=sys.stderr)
     sys.exit(1)
+if isinstance(data, dict) and 'message' in data:
+    msg = data['message']
+    if 'rate limit' in msg.lower():
+        print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
+        print('Wait a few minutes and try again.', file=sys.stderr)
+    else:
+        print(f'GitHub API error: {msg}', file=sys.stderr)
+    sys.exit(1)
+version = os.environ['VERSION']
+prefix = f'v{version}-'
+matches = [r for r in data if r.get('tag_name', '').startswith(prefix)]
+if not matches:
+    print(f'No release found for TrueNAS version {version}', file=sys.stderr)
+    tags = [r.get('tag_name', '?') for r in data]
+    if tags:
+        print('Available releases:', file=sys.stderr)
+        for t in tags:
+            print(f'  {t}', file=sys.stderr)
+    sys.exit(1)
+matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
+print(matches[0]['tag_name'], end='')
 ") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
-
-    if [ -z "$RELEASE_TAG" ]; then
-        echo "ERROR: No release found for TrueNAS version ${VERSION}"
-        echo "Available releases:"
-        curl -sf --max-time 30 "https://api.github.com/repos/${REPO}/releases" \
-            | python3 -c "import sys,json; [print(f'  {r[\"tag_name\"]}') for r in json.load(sys.stdin)]"
-        exit 1
-    fi
 
     echo "Found release: ${RELEASE_TAG}"
 
