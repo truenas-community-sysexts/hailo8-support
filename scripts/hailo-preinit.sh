@@ -130,7 +130,7 @@ else
         [ -d "$d" ] || continue
         name=${d%/}
         name=${name##*/}
-        if [ "$name" != "$running_kver" ]; then
+        if [ "$name" != "$running_kver" ] && [ -f "${d}extra/hailo_pci.ko" ]; then
             SYSEXT_KVER="$name"
             break
         fi
