@@ -121,6 +121,9 @@ jobs:
           trains = sorted(set(re.findall(r'TrueNAS-SCALE-([A-Z][a-zA-Z]+)/', sys.stdin.read())))
           print(len(trains))
           ")
+          # download.truenas.com historically lists 3+ trains (Angelfish, Cobia,
+          # Dragonfish, Electric Eel, Fangtooth, Goldeye, ...). Fewer than 3
+          # means the page is truncated, rate-limited, or the HTML changed.
           if [ "$TRAIN_COUNT" -lt 3 ]; then
             echo "::error title=TrueNAS check::download.truenas.com listing has only ${TRAIN_COUNT} train references — looks broken or rate-limited"
             exit 1
