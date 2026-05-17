@@ -46,11 +46,19 @@ on:
       mark_latest:
         type: string
         required: false
-        default: 'true'
+        default: 'false'
 
 permissions:
   contents: write
   issues: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
 
 jobs:
   resolve:
@@ -138,7 +146,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            gcc-12 \
             cmake \
             libelf-dev \
             squashfs-tools \
@@ -175,9 +182,20 @@ jobs:
           TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
           VERSION="${{ needs.resolve.outputs.truenas_version }}"
           ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          SHA_URL="${ISO_URL}.sha256"
           echo "Downloading: ${ISO_URL}"
           curl -fSL "$ISO_URL" -o /tmp/truenas.iso
           ls -lh /tmp/truenas.iso
+
+          echo "Verifying ISO checksum..."
+          curl -fSL "$SHA_URL" -o /tmp/truenas.iso.sha256
+          EXPECTED=$(awk '{print $1}' /tmp/truenas.iso.sha256)
+          ACTUAL=$(sha256sum /tmp/truenas.iso | awk '{print $1}')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error title=iso-checksum::SHA256 mismatch. Expected: ${EXPECTED}, got: ${ACTUAL}"
+            exit 1
+          fi
+          echo "ISO checksum verified: ${ACTUAL}"
 
       - name: Save TrueNAS ISO to cache
         if: steps.iso-cache.outputs.cache-hit != 'true'
@@ -394,6 +412,35 @@ jobs:
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
 
+          # Detect the GCC major version the kernel was compiled with.
+          # Prefer include/config/cc-version-text (plain-text, one line);
+          # fall back to include/generated/compile.h (LINUX_COMPILER macro).
+          # Handles both "gcc-12 (Debian ...)" and "gcc (Debian 12.2.0-14) 12.2.0".
+          HEADER_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
+          GCC_VER=""
+          extract_gcc_ver() {
+            local file="$1"
+            # Try hyphenated form first: "gcc-12"
+            local ver
+            ver=$(grep -oP 'gcc-\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+            # Try "gcc (Toolchain X.Y.Z) X.Y.Z" form: extract major from final version
+            ver=$(grep -oP 'gcc\s+\(.*?\)\s+\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+          }
+          if [ -f "${HEADER_DIR}/include/config/cc-version-text" ]; then
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/config/cc-version-text")
+          fi
+          if [ -z "$GCC_VER" ] && [ -f "${HEADER_DIR}/include/generated/compile.h" ]; then
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/generated/compile.h")
+          fi
+          if [ -z "$GCC_VER" ]; then
+            echo "::warning title=gcc-version::could not detect GCC version from kernel headers, defaulting to gcc-12"
+            GCC_VER="12"
+          fi
+          echo "Kernel GCC version: gcc-${GCC_VER}"
+          echo "KERNEL_GCC=gcc-${GCC_VER}" >> "$GITHUB_ENV"
+
       # ── Build Hailo PCIe kernel module ──
       - name: Clone hailort-drivers
         run: |
@@ -408,14 +455,20 @@ jobs:
           echo "Checked out hailort-drivers:"
           cd /tmp/hailort-drivers && git log --oneline -1
 
+      - name: Install kernel-matching GCC
+        run: |
+          if ! command -v "$KERNEL_GCC" &>/dev/null; then
+            sudo apt-get install -y "$KERNEL_GCC"
+          fi
+          echo "Using compiler: $("$KERNEL_GCC" --version | head -1)"
+
       - name: Build hailo_pci kernel module
         run: |
           cd /tmp/hailort-drivers/linux/pcie
           KERNEL_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
 
-          echo "Building hailo_pci.ko against kernel ${KVER}..."
-          # Use GCC 12 to match the kernel's compiler (GCC 11 lacks -ftrivial-auto-var-init=zero)
-          make CC=gcc-12 KERNEL_DIR="$KERNEL_DIR" all
+          echo "Building hailo_pci.ko against kernel ${KVER} with ${KERNEL_GCC}..."
+          make CC="$KERNEL_GCC" KERNEL_DIR="$KERNEL_DIR" all
 
           echo "=== Module info ==="
           modinfo hailo_pci.ko
@@ -482,7 +535,10 @@ jobs:
           cp /tmp/hailort-drivers/linux/pcie/hailo_pci.ko "$MOD_DIR/"
 
           # --- HailoRT shared library ---
-          mkdir -p "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+          # x86_64-linux-gnu: TrueNAS SCALE is x86_64-only. If ARM64 support
+          # lands, this needs to become architecture-conditional (aarch64-linux-gnu).
+          LIB_TRIPLET="x86_64-linux-gnu"
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/${LIB_TRIPLET}"
           # Find the actual ELF shared library (not a linker script)
           LIBHAILORT=""
           # shellcheck disable=SC2044 # for-in-find is fine: cmake build paths under /tmp/hailort/build have no spaces
@@ -502,10 +558,10 @@ jobs:
             find /tmp/hailort/build -name "libhailort.so*" -exec file {} \; >&2 || true
             exit 1
           fi
-          cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu/"
+          cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/${LIB_TRIPLET}/"
           LIBNAME=$(basename "$LIBHAILORT")
           # Create soname symlinks
-          cd "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+          cd "${SYSEXT_ROOT}/usr/lib/${LIB_TRIPLET}"
           if [[ "$LIBNAME" =~ ^(libhailort\.so\.[0-9]+) ]]; then
             SONAME="${BASH_REMATCH[1]}"
             [ "$SONAME" != "$LIBNAME" ] && ln -sf "$LIBNAME" "$SONAME"
@@ -620,11 +676,17 @@ jobs:
 
           echo "=== smoke-test: required paths ==="
           require_file "usr/lib/extension-release.d/extension-release.hailo"
+          EXT_REL="${SMOKE_TMP}/extract/usr/lib/extension-release.d/extension-release.hailo"
+          if [ -f "$EXT_REL" ] && ! grep -qx 'ID=_any' "$EXT_REL"; then
+            echo "::error title=smoke-test::extension-release.hailo does not contain 'ID=_any'; got: $(cat "$EXT_REL")"
+            fail=1
+          fi
           require_file "usr/lib/modules/${REAL_KVER}/extra/hailo_pci.ko"
           require_elf  "usr/bin/hailortcli"
           require_file "usr/lib/hailo/hailo-preinit.sh"
 
           # libhailort.so.* — match the concrete ELF (not the unversioned symlink)
+          # x86_64-linux-gnu: must match LIB_TRIPLET in the assemble step
           LIBHAILORT_REL=$(cd "${SMOKE_TMP}/extract" && \
             find usr/lib/x86_64-linux-gnu -maxdepth 1 -name 'libhailort.so.*' -not -type l \
             2>/dev/null | head -1) || true
@@ -672,7 +734,8 @@ jobs:
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
         run: |
           set -euo pipefail
-          FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_DRIVER}/FW/hailo8_fw.${HAILO_DRIVER}.bin"
+          source .github/scripts/hailo-constants.sh
+          FW_URL=$(hailo_fw_url "$HAILO_DRIVER")
           echo "Fetching firmware: ${FW_URL}"
           if ! curl -fsSL --max-time 300 "$FW_URL" -o /tmp/hailo8_fw.bin; then
             echo "::error title=firmware-fetch::failed to download ${FW_URL} — refusing to publish without a firmware.sha256"
@@ -707,49 +770,49 @@ jobs:
           # body links to the Frigate install_hailort.sh on the dev branch (the
           # canonical consumer per CLAUDE.md) so the human gating "Set as latest"
           # can confirm the build matches what Frigate is actually shipping.
-          cat > release-notes.md <<EOF
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
           ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
           | --- | --- |
-          | HailoRT driver | \`${HAILO_DRIVER}\` |
-          | Target kernel | \`${REAL_KVER}\` |
-          | Built on | \`${RUNNER_IMAGE}\` |
-          | Source commit | [\`${BUILD_SHA}\`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
-          | Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: \`${HAILO_DRIVER}\` |
+          | HailoRT driver | `${HAILO_DRIVER}` |
+          | Target kernel | `${REAL_KVER}` |
+          | Built on | `${RUNNER_IMAGE}` |
+          | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
+          | Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: `${HAILO_DRIVER}` |
 
           **Target Device:** Hailo-8 AI Accelerator (PCIe). For Hailo-10/15, see [README](https://github.com/${REPO}#compatibility).
 
           ### Included Components
-          - \`hailo_pci.ko\` — PCIe kernel module (built against kernel \`${REAL_KVER}\`)
-          - \`libhailort.so\` — HailoRT runtime library
-          - \`hailortcli\` — HailoRT command-line tool
-          - \`hailo-load.service\` — Systemd unit that loads the module on boot
-          - \`hailo-preinit.sh\` — TrueNAS PREINIT script bundled inside the sysext
-          - \`51-hailo-udev.rules\` — Udev rules for \`/dev/hailo*\` permissions
+          - `hailo_pci.ko` — PCIe kernel module (built against kernel `${REAL_KVER}`)
+          - `libhailort.so` — HailoRT runtime library
+          - `hailortcli` — HailoRT command-line tool
+          - `hailo-load.service` — Systemd unit that loads the module on boot
+          - `hailo-preinit.sh` — TrueNAS PREINIT script bundled inside the sysext
+          - `51-hailo-udev.rules` — Udev rules for `/dev/hailo*` permissions
 
-          > **Note:** Hailo-8 firmware (\`hailo8_fw.bin\`) is proprietary and downloaded
+          > **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is proprietary and downloaded
           > directly from Hailo's servers during installation. Not included in this release.
 
           ### Install
-          \`\`\`bash
+          ```bash
           curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
-          \`\`\`
+          ```
 
           ### Verify
-          \`\`\`bash
+          ```bash
           sudo ./install.sh --check
           sudo hailortcli fw-control identify
-          \`\`\`
+          ```
 
           ### Uninstall
-          \`\`\`bash
+          ```bash
           curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
-          \`\`\`
+          ```
 
           ### Checksums
-          See \`hailo.raw.sha256\`.
-          EOF
+          See `hailo.raw.sha256`.
+          RELEASE_NOTES
 
           echo "=== Rendered release notes ==="
           cat release-notes.md

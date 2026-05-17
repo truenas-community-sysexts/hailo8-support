@@ -102,9 +102,11 @@ do_check() {
 
     # 5. Persistent config dir
     local persist_dir=""
+    shopt -s nullglob
     for d in /mnt/*/.config/hailo; do
         [ -d "$d" ] && persist_dir="$d" && break
     done
+    shopt -u nullglob
     if [ -n "$persist_dir" ]; then
         record_pass "Persistent config at ${persist_dir}"
     else
@@ -687,7 +689,7 @@ if_real cp "${WORK_DIR}/hailo.raw" "${PERSIST_DIR}/hailo.raw"
 if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] would: write \$HAILO_VERSION (${HAILO_VERSION}) to ${PERSIST_DIR}/.hailo-driver-version"
 else
-    echo -n "$HAILO_VERSION" > "${PERSIST_DIR}/.hailo-driver-version"
+    printf '%s' "$HAILO_VERSION" > "${PERSIST_DIR}/.hailo-driver-version"
 fi
 
 # Save source repo so the boot-time PREINIT script can point users at the right
@@ -695,7 +697,7 @@ fi
 if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] would: write \$REPO (${REPO}) to ${PERSIST_DIR}/.hailo-repo"
 else
-    echo -n "$REPO" > "${PERSIST_DIR}/.hailo-repo"
+    printf '%s' "$REPO" > "${PERSIST_DIR}/.hailo-repo"
 fi
 
 # --- Install PREINIT script to persistent storage ---

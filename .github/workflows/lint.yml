@@ -28,10 +28,7 @@ jobs:
       - name: Run shellcheck
         run: |
           shellcheck --severity=warning \
-            scripts/install.sh \
-            scripts/hailo-preinit.sh \
-            scripts/restore.sh \
-            scripts/uninstall.sh \
+            scripts/*.sh \
             .github/scripts/*.sh
 
   tracked-versions:

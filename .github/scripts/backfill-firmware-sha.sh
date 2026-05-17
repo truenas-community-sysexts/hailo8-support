@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.github/scripts/hailo-constants.sh
+source "${SCRIPT_DIR}/hailo-constants.sh"
+
 REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -69,7 +73,7 @@ while IFS=$'\t' read -r tag immutable; do
         continue
     fi
 
-    fw_url="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${version}/FW/hailo8_fw.${version}.bin"
+    fw_url=$(hailo_fw_url "$version")
     fw_tmp="${WORKDIR}/hailo8_fw.${version}.bin"
 
     if [ ! -f "$fw_tmp" ]; then
