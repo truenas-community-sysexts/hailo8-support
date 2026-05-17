@@ -407,10 +407,19 @@ jobs:
             echo "ERROR: Failed to commit tracked-versions update"
             exit 1
           }
-          git push || {
-            echo "ERROR: Failed to push tracked-versions update"
-            exit 1
-          }
+          # Retry once on push failure: if main moved (e.g. Dependabot merge)
+          # between checkout and now, rebase on top and try again.
+          if ! git push; then
+            echo "Push failed, attempting rebase and retry..."
+            git pull --rebase || {
+              echo "::error title=Push failed::git pull --rebase failed after push rejection"
+              exit 1
+            }
+            git push || {
+              echo "::error title=Push failed::git push failed after rebase retry"
+              exit 1
+            }
+          fi
 
           {
             echo "truenas_version=${FINAL_TRUENAS_VERSION}"
