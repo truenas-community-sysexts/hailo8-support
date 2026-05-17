@@ -56,6 +56,10 @@ concurrency:
   group: build-release
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
