@@ -4,6 +4,26 @@
 
 set -euo pipefail
 
+# --- Parse CLI arguments ---
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        --help)
+            echo "Usage: sudo ./restore.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --force    Proceed even if hailo_pci is in use (requires reboot afterward)"
+            echo "  --help     Show this help"
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown option: $arg (see --help)" >&2
+            exit 2
+            ;;
+    esac
+done
+
 # hailo_init_script_lookup
 #
 # Locate any registered TrueNAS init script related to this fork (matches
@@ -58,10 +78,53 @@ trap restore_usr_readonly EXIT INT TERM
 
 echo "=== Removing Hailo-8 sysext ==="
 
-# Unload module if present
+# Pre-check: refuse to proceed if hailo_pci is in use unless --force is given.
+# A held module means the backing .ko and libraries will be pulled out from
+# under running consumers, leaving a half-state that confuses on next operation.
+NEEDS_REBOOT=0
 if lsmod 2>/dev/null | awk '{print $1}' | grep -qx hailo_pci; then
-    echo "Unloading hailo_pci module..."
-    rmmod hailo_pci || echo "WARNING: Failed to unload hailo_pci"
+    REFCNT=$(lsmod | awk '$1 == "hailo_pci" {print $3}')
+    if [ "${REFCNT:-0}" -gt 0 ]; then
+        echo "hailo_pci is currently in use (refcount: ${REFCNT})."
+        # Show which processes hold the device open
+        if command -v fuser >/dev/null 2>&1; then
+            PIDS=$(fuser /dev/hailo* 2>/dev/null | tr -s ' ') || true
+            if [ -n "$PIDS" ]; then
+                echo "  PIDs using /dev/hailo*: ${PIDS}"
+                # Try to name the processes
+                for pid in $PIDS; do
+                    PNAME=$(ps -p "$pid" -o comm= 2>/dev/null) || PNAME="(unknown)"
+                    echo "    PID ${pid}: ${PNAME}"
+                done
+            fi
+        fi
+        if [ "$FORCE" = "0" ]; then
+            echo ""
+            echo "ERROR: Refusing to remove sysext while hailo_pci is in use." >&2
+            echo "  Stop the consuming process first (e.g. docker stop frigate)," >&2
+            echo "  then re-run this script." >&2
+            echo "  Or pass --force to remove anyway (reboot required afterward)." >&2
+            exit 1
+        fi
+        echo ""
+        echo "WARNING: --force given. Proceeding despite active consumers."
+        echo "  The module will remain loaded in memory until reboot."
+        echo "  A REBOOT IS REQUIRED to cleanly unload hailo_pci."
+        NEEDS_REBOOT=1
+    fi
+
+    if [ "$NEEDS_REBOOT" = "0" ]; then
+        echo "Unloading hailo_pci module..."
+        if ! rmmod hailo_pci; then
+            echo "WARNING: rmmod hailo_pci failed unexpectedly."
+            if [ "$FORCE" = "0" ]; then
+                echo "ERROR: Cannot unload module. Pass --force to continue anyway." >&2
+                exit 1
+            fi
+            echo "  Continuing due to --force. A REBOOT IS REQUIRED."
+            NEEDS_REBOOT=1
+        fi
+    fi
 fi
 
 # Remove hailo sysext symlink and unmerge so /usr can be remounted writable.
@@ -85,6 +148,15 @@ rm -f "${HAILO_RAW}"
 # Restore read-only
 zfs set readonly=on "${USR_DATASET}"
 USR_WAS_WRITABLE=0
+
+# Re-merge any remaining sysexts (e.g. NVIDIA) that were deactivated by
+# the earlier `systemd-sysext unmerge`. Without this, co-installed sysexts
+# stay unmerged until the next reboot.
+if ls /run/extensions/*.raw >/dev/null 2>&1; then
+    echo "Re-merging remaining sysexts..."
+    systemd-sysext refresh 2>/dev/null || echo "WARNING: Failed to re-merge remaining sysexts"
+    ldconfig 2>/dev/null || true
+fi
 
 echo ""
 echo "=== Restore complete ==="
@@ -121,3 +193,13 @@ for d in /mnt/*/.config/hailo; do
 done
 
 echo "Persistence cleanup complete"
+
+if [ "$NEEDS_REBOOT" = "1" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  WARNING: hailo_pci was still in use when removed."
+    echo "  The module remains loaded in memory but its backing files"
+    echo "  are gone. A REBOOT IS REQUIRED to fully clean up."
+    echo "  Stop any Hailo consumers (e.g. Frigate) before rebooting."
+    echo "============================================================"
+fi

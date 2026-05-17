@@ -39,10 +39,10 @@ sysext is no longer compatible.
    The installer downloads the matching `hailo.raw` and replaces the
    stale sysext on the persistent pool. The next boot succeeds.
 
-5. If no matching release exists yet, the daily auto-build workflow on
-   this fork picks up new TrueNAS versions within ~24 hours of the ISO
-   being published at `download.truenas.com`. Wait for the build to
-   land, then repeat step 4. If a build is overdue, open an issue.
+5. If no matching release exists yet, the daily auto-build workflow
+   picks up new TrueNAS versions within ~24 hours of the ISO being
+   published at `download.truenas.com`. Wait for the build to land,
+   then repeat step 4. If a build is overdue, open an issue.
 
 ### Why this can't be fixed automatically
 
