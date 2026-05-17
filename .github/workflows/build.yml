@@ -524,7 +524,10 @@ jobs:
           cp /tmp/hailort-drivers/linux/pcie/hailo_pci.ko "$MOD_DIR/"
 
           # --- HailoRT shared library ---
-          mkdir -p "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+          # x86_64-linux-gnu: TrueNAS SCALE is x86_64-only. If ARM64 support
+          # lands, this needs to become architecture-conditional (aarch64-linux-gnu).
+          LIB_TRIPLET="x86_64-linux-gnu"
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/${LIB_TRIPLET}"
           # Find the actual ELF shared library (not a linker script)
           LIBHAILORT=""
           # shellcheck disable=SC2044 # for-in-find is fine: cmake build paths under /tmp/hailort/build have no spaces
@@ -544,10 +547,10 @@ jobs:
             find /tmp/hailort/build -name "libhailort.so*" -exec file {} \; >&2 || true
             exit 1
           fi
-          cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu/"
+          cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/${LIB_TRIPLET}/"
           LIBNAME=$(basename "$LIBHAILORT")
           # Create soname symlinks
-          cd "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+          cd "${SYSEXT_ROOT}/usr/lib/${LIB_TRIPLET}"
           if [[ "$LIBNAME" =~ ^(libhailort\.so\.[0-9]+) ]]; then
             SONAME="${BASH_REMATCH[1]}"
             [ "$SONAME" != "$LIBNAME" ] && ln -sf "$LIBNAME" "$SONAME"
@@ -672,6 +675,7 @@ jobs:
           require_file "usr/lib/hailo/hailo-preinit.sh"
 
           # libhailort.so.* — match the concrete ELF (not the unversioned symlink)
+          # x86_64-linux-gnu: must match LIB_TRIPLET in the assemble step
           LIBHAILORT_REL=$(cd "${SMOKE_TMP}/extract" && \
             find usr/lib/x86_64-linux-gnu -maxdepth 1 -name 'libhailort.so.*' -not -type l \
             2>/dev/null | head -1) || true
