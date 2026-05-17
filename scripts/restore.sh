@@ -86,6 +86,15 @@ rm -f "${HAILO_RAW}"
 zfs set readonly=on "${USR_DATASET}"
 USR_WAS_WRITABLE=0
 
+# Re-merge any remaining sysexts (e.g. NVIDIA) that were deactivated by
+# the earlier `systemd-sysext unmerge`. Without this, co-installed sysexts
+# stay unmerged until the next reboot.
+if ls /run/extensions/*.raw >/dev/null 2>&1; then
+    echo "Re-merging remaining sysexts..."
+    systemd-sysext refresh 2>/dev/null || echo "WARNING: Failed to re-merge remaining sysexts"
+    ldconfig 2>/dev/null || true
+fi
+
 echo ""
 echo "=== Restore complete ==="
 
