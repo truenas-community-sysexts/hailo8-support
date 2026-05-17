@@ -233,7 +233,7 @@ jobs:
               return 1
             fi
             line=$(printf '%s\n' "$content" \
-              | grep -E '^[[:space:]]*hailo_version[[:space:]]*=' \
+              | grep -E '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=' \
               || true)
             if [ -z "$line" ]; then
               echo "::error title=Frigate pin parser::${label} contains no hailo_version assignment"
@@ -248,7 +248,7 @@ jobs:
               return 1
             fi
             value=$(printf '%s\n' "$line" \
-              | sed -E 's/^[[:space:]]*hailo_version[[:space:]]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\1/')
+              | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\2/')
             if ! printf '%s' "$value" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
               echo "::error title=Frigate pin parser::${label} hailo_version is not a clean X.Y.Z release: '${value}'"
               echo "ERROR: ${label} hailo_version is not a clean X.Y.Z release: '${value}'" >&2
