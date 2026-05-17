@@ -707,49 +707,49 @@ jobs:
           # body links to the Frigate install_hailort.sh on the dev branch (the
           # canonical consumer per CLAUDE.md) so the human gating "Set as latest"
           # can confirm the build matches what Frigate is actually shipping.
-          cat > release-notes.md <<EOF
-          ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
+          envsubst > release-notes.md <<'RELEASE_NOTES'
+## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
-          | Field | Value |
-          | --- | --- |
-          | HailoRT driver | \`${HAILO_DRIVER}\` |
-          | Target kernel | \`${REAL_KVER}\` |
-          | Built on | \`${RUNNER_IMAGE}\` |
-          | Source commit | [\`${BUILD_SHA}\`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
-          | Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: \`${HAILO_DRIVER}\` |
+| Field | Value |
+| --- | --- |
+| HailoRT driver | `${HAILO_DRIVER}` |
+| Target kernel | `${REAL_KVER}` |
+| Built on | `${RUNNER_IMAGE}` |
+| Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
+| Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: `${HAILO_DRIVER}` |
 
-          **Target Device:** Hailo-8 AI Accelerator (PCIe). For Hailo-10/15, see [README](https://github.com/${REPO}#compatibility).
+**Target Device:** Hailo-8 AI Accelerator (PCIe). For Hailo-10/15, see [README](https://github.com/${REPO}#compatibility).
 
-          ### Included Components
-          - \`hailo_pci.ko\` — PCIe kernel module (built against kernel \`${REAL_KVER}\`)
-          - \`libhailort.so\` — HailoRT runtime library
-          - \`hailortcli\` — HailoRT command-line tool
-          - \`hailo-load.service\` — Systemd unit that loads the module on boot
-          - \`hailo-preinit.sh\` — TrueNAS PREINIT script bundled inside the sysext
-          - \`51-hailo-udev.rules\` — Udev rules for \`/dev/hailo*\` permissions
+### Included Components
+- `hailo_pci.ko` — PCIe kernel module (built against kernel `${REAL_KVER}`)
+- `libhailort.so` — HailoRT runtime library
+- `hailortcli` — HailoRT command-line tool
+- `hailo-load.service` — Systemd unit that loads the module on boot
+- `hailo-preinit.sh` — TrueNAS PREINIT script bundled inside the sysext
+- `51-hailo-udev.rules` — Udev rules for `/dev/hailo*` permissions
 
-          > **Note:** Hailo-8 firmware (\`hailo8_fw.bin\`) is proprietary and downloaded
-          > directly from Hailo's servers during installation. Not included in this release.
+> **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is proprietary and downloaded
+> directly from Hailo's servers during installation. Not included in this release.
 
-          ### Install
-          \`\`\`bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
-          \`\`\`
+### Install
+```bash
+curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+```
 
-          ### Verify
-          \`\`\`bash
-          sudo ./install.sh --check
-          sudo hailortcli fw-control identify
-          \`\`\`
+### Verify
+```bash
+sudo ./install.sh --check
+sudo hailortcli fw-control identify
+```
 
-          ### Uninstall
-          \`\`\`bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
-          \`\`\`
+### Uninstall
+```bash
+curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+```
 
-          ### Checksums
-          See \`hailo.raw.sha256\`.
-          EOF
+### Checksums
+See `hailo.raw.sha256`.
+RELEASE_NOTES
 
           echo "=== Rendered release notes ==="
           cat release-notes.md
