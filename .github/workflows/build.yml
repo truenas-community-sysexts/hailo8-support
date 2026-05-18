@@ -853,6 +853,7 @@ jobs:
             hailo.raw
             hailo.raw.sha256
             firmware.sha256
+            scripts/hailo-lib.sh
             scripts/install.sh
             scripts/restore.sh
             scripts/uninstall.sh
