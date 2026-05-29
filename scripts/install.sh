@@ -366,6 +366,35 @@ if [ "$CHECK_MODE" = "1" ] && [ "$DRY_RUN" = "1" ]; then
     exit 2
 fi
 
+# Every mode past --help touches privileged state: zfs readonly toggles,
+# writes under /usr, midclt, insmod. Fail fast with a clear message rather
+# than partway through after a download, firmware fetch, and unsquash.
+if [ "$(id -u 2>/dev/null)" != "0" ]; then
+    echo "ERROR: must run as root (use sudo)" >&2
+    exit 1
+fi
+
+# Persistence only works if --persist-path is the exact location the
+# boot-time PREINIT script scans: /mnt/<pool>/.config/hailo, a single pool
+# component under /mnt. hailo-preinit.sh re-derives the dir by globbing
+# /mnt/*/.config/hailo and reads nothing else, so any other path silently
+# breaks persistence after the next reboot or TrueNAS update:
+#   - tmpfs (/tmp, /run): backup and script gone on the next reboot
+#   - an OS dir (/usr, /etc, /var, /data, /): wiped on the next update
+#   - a real pool but wrong/deeper subdir (/mnt/tank/foo): the glob misses it
+# Anchored regex (not a case glob, whose * would span /) enforces a single
+# pool component. --pool resolves to this shape automatically.
+if [ -n "$PERSIST_PATH" ]; then
+    PERSIST_PATH_REAL=$(realpath -m "$PERSIST_PATH" 2>/dev/null || echo "$PERSIST_PATH")
+    if [[ ! "$PERSIST_PATH_REAL" =~ ^/mnt/[^/]+/\.config/hailo/?$ ]]; then
+        echo "ERROR: --persist-path must be /mnt/<pool>/.config/hailo (got: ${PERSIST_PATH})" >&2
+        echo "  The boot-time PREINIT script only scans /mnt/*/.config/hailo for the backup," >&2
+        echo "  so any other location silently breaks persistence after a reboot or update." >&2
+        echo "  Pass --pool=<name> instead (it resolves to /mnt/<name>/.config/hailo)." >&2
+        exit 2
+    fi
+fi
+
 # The project moved from scyto/truenas-hailo to truenas-community-sysexts/hailo8-support.
 # Catch the old slug if it arrives via --repo=, HAILO_REPO env, or stale docs/configs,
 # and redirect transparently rather than 404 on releases lookup.
