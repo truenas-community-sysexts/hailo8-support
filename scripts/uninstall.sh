@@ -28,18 +28,21 @@ if [ "$REPO" = "scyto/truenas-hailo" ]; then
     echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'." >&2
     REPO="truenas-community-sysexts/hailo8-support"
 fi
-echo "uninstall.sh: fetching restore.sh from ${REPO}/releases/latest..." >&2
-TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
-if ! curl -fsSL --max-time 60 \
-        "https://github.com/${REPO}/releases/latest/download/restore.sh" \
-        -o "$TMP"; then
+BASE_URL="https://github.com/${REPO}/releases/latest/download"
+echo "uninstall.sh: fetching restore.sh + hailo-lib.sh from ${REPO}/releases/latest..." >&2
+TMPDIR=$(mktemp -d /tmp/hailo-uninstall.XXXXXXXXXX)
+trap 'rm -rf "$TMPDIR"' EXIT
+if ! curl -fsSL --max-time 60 "${BASE_URL}/restore.sh" -o "${TMPDIR}/restore.sh"; then
     echo "ERROR: failed to download restore.sh from ${REPO}/releases/latest" >&2
     exit 1
 fi
-if [ ! -s "$TMP" ]; then
+if [ ! -s "${TMPDIR}/restore.sh" ]; then
     echo "ERROR: downloaded restore.sh is empty (${REPO}/releases/latest)" >&2
     exit 1
 fi
-bash "$TMP" "$@"
+# hailo-lib.sh is a shared library that restore.sh sources at startup.
+# A download failure is not fatal here: restore.sh has its own fallback
+# that re-fetches the lib if the sibling is missing.
+curl -fsSL --max-time 30 "${BASE_URL}/hailo-lib.sh" -o "${TMPDIR}/hailo-lib.sh" 2>/dev/null || true
+bash "${TMPDIR}/restore.sh" "$@"
 exit $?

@@ -107,10 +107,6 @@ jobs:
           RUNNER="${INPUT_RUNNER}"
           MARK_LATEST="${INPUT_MARK_LATEST:-true}"
 
-          if [ -z "$VERSION" ]; then VERSION="$TRACKED_VERSION"; fi
-          if [ -z "$TRAIN" ];   then TRAIN="$TRACKED_TRAIN";     fi
-          if [ -z "$HAILO" ];   then HAILO="$TRACKED_HAILO";     fi
-
           if [ -z "$RUNNER" ]; then
             RUNNER=$(.github/scripts/resolve-runner.sh "$TRAIN" "$VERSION")
           fi
@@ -857,6 +853,7 @@ jobs:
             hailo.raw
             hailo.raw.sha256
             firmware.sha256
+            scripts/hailo-lib.sh
             scripts/install.sh
             scripts/restore.sh
             scripts/uninstall.sh
