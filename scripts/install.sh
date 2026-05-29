@@ -374,20 +374,25 @@ if [ "$(id -u 2>/dev/null)" != "0" ]; then
     exit 1
 fi
 
-# Reject a --persist-path under /usr. /usr is a read-only ZFS dataset the
-# installer only briefly flips writable, and TrueNAS resets it on every
-# update, so a "persistent" copy there would be lost. Persistence must live
-# on a data pool (e.g. /mnt/<pool>/.config/hailo).
+# Persistence only works if --persist-path is the exact location the
+# boot-time PREINIT script scans: /mnt/<pool>/.config/hailo, a single pool
+# component under /mnt. hailo-preinit.sh re-derives the dir by globbing
+# /mnt/*/.config/hailo and reads nothing else, so any other path silently
+# breaks persistence after the next reboot or TrueNAS update:
+#   - tmpfs (/tmp, /run): backup and script gone on the next reboot
+#   - an OS dir (/usr, /etc, /var, /data, /): wiped on the next update
+#   - a real pool but wrong/deeper subdir (/mnt/tank/foo): the glob misses it
+# Anchored regex (not a case glob, whose * would span /) enforces a single
+# pool component. --pool resolves to this shape automatically.
 if [ -n "$PERSIST_PATH" ]; then
     PERSIST_PATH_REAL=$(realpath -m "$PERSIST_PATH" 2>/dev/null || echo "$PERSIST_PATH")
-    case "$PERSIST_PATH_REAL" in
-        /usr|/usr/*)
-            echo "ERROR: --persist-path must not be under /usr: ${PERSIST_PATH}" >&2
-            echo "  /usr is read-only and is reset on TrueNAS updates, so the config would not persist." >&2
-            echo "  Use a data pool path, e.g. /mnt/<pool>/.config/hailo" >&2
-            exit 2
-            ;;
-    esac
+    if [[ ! "$PERSIST_PATH_REAL" =~ ^/mnt/[^/]+/\.config/hailo/?$ ]]; then
+        echo "ERROR: --persist-path must be /mnt/<pool>/.config/hailo (got: ${PERSIST_PATH})" >&2
+        echo "  The boot-time PREINIT script only scans /mnt/*/.config/hailo for the backup," >&2
+        echo "  so any other location silently breaks persistence after a reboot or update." >&2
+        echo "  Pass --pool=<name> instead (it resolves to /mnt/<name>/.config/hailo)." >&2
+        exit 2
+    fi
 fi
 
 # The project moved from scyto/truenas-hailo to truenas-community-sysexts/hailo8-support.
