@@ -12,7 +12,7 @@ Changes since the initial project baseline, organized by area.
 - **`install.sh --dry-run`.** Performs every read/network/validation step (release lookup, sha256 verify, firmware download, squashfs unpack/repack) but skips every command that mutates the running system. Each skipped mutation is logged as `[dry-run] would: <command>`. Mutually exclusive with `--check`.
 - **`/tmp/hailo.raw` self-copy guard.** Prevents `install.sh /tmp/hailo.raw` from colliding with the installer's staging path.
 - **`midclt` lookup refused on transient error.** Distinguishes "not registered" from "lookup error" and aborts on the latter rather than guessing.
-- **Firmware sha256 verification.** `install.sh` verifies downloaded Hailo-8 firmware against the sha256 published in `.github/tracked-versions.json`. Hard-fails on mismatch or missing hash.
+- **Firmware sha256 verification.** `install.sh` verifies downloaded Hailo-8 firmware against the sha256 published as the release's `firmware.sha256` asset. Hard-fails on mismatch or missing hash.
 - **`scripts/uninstall.sh` wrapper.** Discoverable alias around `restore.sh` for users who search for "uninstall" rather than "restore".
 
 ## Sysext Activation on TrueNAS
@@ -36,5 +36,5 @@ Changes since the initial project baseline, organized by area.
 - **Lint workflow.** `shellcheck --severity=warning` on all shell scripts, `actionlint` on workflow YAML, and `tracked-versions.json` shape validation.
 - **Build-time smoke test.** Before publishing, `build.yml` asserts required files exist, ELF binaries are real, and `hailo_pci.ko`'s vermagic matches the target kernel.
 - **Richer release notes.** Includes real kernel version, runner image, build commit SHA, and Frigate compatibility link.
-- **Firmware sha256 captured on Hailo bumps.** `check-releases.yml` computes and records the sha256 in the same commit as the version bump.
+- **Per-release firmware sha256.** `build.yml` computes the firmware sha256 at build time and uploads it as the release's `firmware.sha256` asset (it is no longer carried in `tracked-versions.json`).
 - **Dependabot for `github-actions`.** Weekly PRs to bump action versions.

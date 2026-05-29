@@ -312,4 +312,4 @@ Enumerates tags reachable from `hailort-drivers`'s `hailo8` branch (not `master`
 
 ### Consolidated commit and dispatch
 
-If anything moved, the workflow writes the state file in one commit, runs `sync-build-defaults.sh` to keep `build.yml`'s `workflow_dispatch` defaults aligned, and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge — a human verifies the build on Hailo-8 hardware and promotes it via the GitHub UI.
+If anything moved, the workflow writes the state file in one commit and dispatches a single build with `mark_latest='false'`. `build.yml`'s `workflow_dispatch` defaults are blank and resolved at runtime from `tracked-versions.json`, so no defaults-sync step is needed. Auto-builds publish releases without the "Latest" badge — a human verifies the build on Hailo-8 hardware and promotes it via the GitHub UI.
