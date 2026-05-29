@@ -366,6 +366,30 @@ if [ "$CHECK_MODE" = "1" ] && [ "$DRY_RUN" = "1" ]; then
     exit 2
 fi
 
+# Every mode past --help touches privileged state: zfs readonly toggles,
+# writes under /usr, midclt, insmod. Fail fast with a clear message rather
+# than partway through after a download, firmware fetch, and unsquash.
+if [ "$(id -u 2>/dev/null)" != "0" ]; then
+    echo "ERROR: must run as root (use sudo)" >&2
+    exit 1
+fi
+
+# Reject a --persist-path under /usr. /usr is a read-only ZFS dataset the
+# installer only briefly flips writable, and TrueNAS resets it on every
+# update, so a "persistent" copy there would be lost. Persistence must live
+# on a data pool (e.g. /mnt/<pool>/.config/hailo).
+if [ -n "$PERSIST_PATH" ]; then
+    PERSIST_PATH_REAL=$(realpath -m "$PERSIST_PATH" 2>/dev/null || echo "$PERSIST_PATH")
+    case "$PERSIST_PATH_REAL" in
+        /usr|/usr/*)
+            echo "ERROR: --persist-path must not be under /usr: ${PERSIST_PATH}" >&2
+            echo "  /usr is read-only and is reset on TrueNAS updates, so the config would not persist." >&2
+            echo "  Use a data pool path, e.g. /mnt/<pool>/.config/hailo" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 # The project moved from scyto/truenas-hailo to truenas-community-sysexts/hailo8-support.
 # Catch the old slug if it arrives via --repo=, HAILO_REPO env, or stale docs/configs,
 # and redirect transparently rather than 404 on releases lookup.
