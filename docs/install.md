@@ -1,5 +1,7 @@
 # Install Reference
 
+> **Runs as root.** `install.sh` performs privileged operations (toggles ZFS `readonly`, writes under `/usr`, calls `midclt`, loads kernel modules), so it must run as root. Use `sudo` as shown in every example below. `--check` and `--dry-run` also require root; only `--help` runs without it.
+
 ## Installing a Specific Version
 
 Release tags encode both versions: `v<truenas>-hailo<driver>` (e.g., `v25.10.2.1-hailo4.21.0`).
@@ -29,7 +31,7 @@ sudo bash install.sh /tmp/hailo.raw
 | --- | --- |
 | `--repo=OWNER/NAME` | GitHub repo for releases (default: `truenas-community-sysexts/hailo8-support`). Also settable via `HAILO_REPO` env var. |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
-| `--persist-path=PATH` | Exact path for persistent config directory |
+| `--persist-path=PATH` | Persistent config directory. Must be `/mnt/<pool>/.config/hailo` (the exact location the boot-time PREINIT script scans). Prefer `--pool`, which builds this path for you. |
 | `--check` | Probe an existing install (read-only) and report status |
 | `--dry-run` | Validate everything (downloads, checksums, network) without modifying the system |
 | `--help` | Show usage help |
