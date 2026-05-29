@@ -18,7 +18,7 @@ The runner image is resolved per-build from TrueNAS's published Debian release (
 Hailo-8 firmware is proprietary and this project does not redistribute it. Instead:
 
 - At **install time**: firmware is downloaded from Hailo's S3 servers and injected into the sysext squashfs
-- At **boot time**: the backed-up sysext already contains firmware — no network access needed
+- At **boot time**: the backed-up sysext already contains firmware - no network access needed
 - The firmware version is determined from the release tag (e.g., `v25.10.2.1-hailo4.21.0` → version `4.21.0`)
 
 ## TrueNAS-Specific Details
@@ -38,24 +38,24 @@ If anything moved, the workflow writes the file in one commit and dispatches one
 
 ## Custom Builds
 
-If you need a build for a TrueNAS version or HailoRT version that doesn't have a pre-built release, you can build your own using GitHub Actions — no local build environment needed.
+If you need a build for a TrueNAS version or HailoRT version that doesn't have a pre-built release, you can build your own using GitHub Actions - no local build environment needed.
 
 ### Fork and Build
 
 1. **Fork** this repository on GitHub
 2. Go to **Actions** > **Build Hailo Sysext** > **Run workflow**
 3. Fill in the parameters:
-   - **TrueNAS version** — e.g., `25.10.2.1` (must match an existing TrueNAS ISO on the download server)
-   - **HailoRT driver version** — e.g., `4.21.0` (must match a tag in [hailo-ai/hailort-drivers](https://github.com/hailo-ai/hailort-drivers))
-   - **Train name** — e.g., `Goldeye` (must match the train iXsystems publishes the ISO under at `download.truenas.com/TrueNAS-SCALE-<train>/<version>/`; the build uses it to construct the ISO download URL). The current tracked train lives in [`.github/tracked-versions.json`](../.github/tracked-versions.json).
+   - **TrueNAS version** - e.g., `25.10.2.1` (must match an existing TrueNAS ISO on the download server)
+   - **HailoRT driver version** - e.g., `4.21.0` (must match a tag in [hailo-ai/hailort-drivers](https://github.com/hailo-ai/hailort-drivers))
+   - **Train name** - e.g., `Goldeye` (must match the train iXsystems publishes the ISO under at `download.truenas.com/TrueNAS-SCALE-<train>/<version>/`; the build uses it to construct the ISO download URL). The current tracked train lives in [`.github/tracked-versions.json`](../.github/tracked-versions.json).
 4. The workflow builds `hailo.raw` and creates a GitHub release in your fork (~15-30 min, ~5 min cached)
 5. Use the install script from your fork's release, or download `hailo.raw` and install manually
 
 ### When to Build Custom
 
 - **New TrueNAS release** not yet covered by a pre-built release (the daily check workflow usually catches these within 24 hours of the ISO going live)
-- **Different HailoRT version** — you want to test a newer or older driver version
-- **Modified build** — you've forked the repo to change build options, add patches, etc.
+- **Different HailoRT version** - you want to test a newer or older driver version
+- **Modified build** - you've forked the repo to change build options, add patches, etc.
 
 ### Version Defaults
 

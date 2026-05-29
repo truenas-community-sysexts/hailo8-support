@@ -9,7 +9,7 @@ A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator s
 | [Quick Start](#quick-start) | Install, verify, uninstall |
 | [docs/install.md](docs/install.md) | Install options, specific versions, persistence, scripts reference |
 | [docs/build.md](docs/build.md) | Build process, firmware handling, automated updates, custom builds |
-| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints |
+| [docs/architecture.md](docs/architecture.md) | Deep technical reference - sysext structure, read-only constraints |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Recovery from kernel-mismatch errors after TrueNAS upgrades |
 
 ## What's Included
@@ -34,8 +34,8 @@ The `hailo.raw` sysext contains:
 | --- | --- | --- |
 | Hailo-8  | Yes | Primary target |
 | Hailo-8L | Yes | Same driver / kernel module; Frigate uses the `hailo8l` detector type for both |
-| Hailo-10 | No | Lives on `master` of [`hailort-drivers`](https://github.com/hailo-ai/hailort-drivers) (5.x line) — not built by this project |
-| Hailo-15 | No | Same — not built by this project |
+| Hailo-10 | No | Lives on `master` of [`hailort-drivers`](https://github.com/hailo-ai/hailort-drivers) (5.x line) - not built by this project |
+| Hailo-15 | No | Same - not built by this project |
 
 This sysext builds the `hailo_pci` kernel module from the **`hailo8` branch** of [`hailort-drivers`](https://github.com/hailo-ai/hailort-drivers). The `master` branch tracks a different driver line for Hailo-10 / Hailo-15 that does not support Hailo-8 silicon.
 
@@ -129,13 +129,13 @@ model:
 
 ## Important Notes
 
-- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build — see [docs/troubleshooting.md](docs/troubleshooting.md#kernel-version-mismatch-after-a-truenas-update) for recovery steps.
+- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build - see [docs/troubleshooting.md](docs/troubleshooting.md#kernel-version-mismatch-after-a-truenas-update) for recovery steps.
 - Secure Boot: The unsigned kernel module may require disabling Secure Boot.
-- If firmware download fails during installation, the script aborts — the sysext will not be installed without firmware.
+- If firmware download fails during installation, the script aborts - the sysext will not be installed without firmware.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 The Hailo-8 firmware downloaded during installation is proprietary and subject to Hailo's EULA.
 

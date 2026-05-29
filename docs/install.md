@@ -22,7 +22,7 @@ sudo bash install.sh /tmp/hailo.raw
 ```
 
 > **Warning:** Using a `hailo.raw` built for a different TrueNAS version will fail to load
-> the kernel module. The module is compiled against exact kernel headers — a version mismatch
+> the kernel module. The module is compiled against exact kernel headers - a version mismatch
 > means `insmod` will refuse to load it. Always use the release matching your TrueNAS version.
 
 ## Install Options
@@ -71,8 +71,8 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 
 1. **Backup**: The sysext (with firmware already injected) is copied to a persistent ZFS pool
 2. **PREINIT script**: Registered with TrueNAS middleware, runs on every boot before apps start
-3. On boot, the script compares checksums — if the installed sysext differs from the backup (indicating a TrueNAS update) or is missing, it reinstalls from the backup
-4. No network access is needed at boot — firmware is already inside the backed-up sysext
+3. On boot, the script compares checksums - if the installed sysext differs from the backup (indicating a TrueNAS update) or is missing, it reinstalls from the backup
+4. No network access is needed at boot - firmware is already inside the backed-up sysext
 
 ### Persistent Storage Layout
 
@@ -88,9 +88,9 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 
 The install script selects a pool in this order:
 
-1. `--persist-path=PATH` — use this exact path (highest priority)
-2. `--pool=NAME` — use `/mnt/<NAME>/.config/hailo`
-3. **Auto-detect** — first ZFS pool that isn't `boot-pool`
+1. `--persist-path=PATH` - use this exact path (highest priority)
+2. `--pool=NAME` - use `/mnt/<NAME>/.config/hailo`
+3. **Auto-detect** - first ZFS pool that isn't `boot-pool`
 
 The PREINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`, so it works even if the pool name changes.
 
@@ -105,6 +105,6 @@ If you want tighter permissions, edit the rule in the sysext to use `GROUP="vide
 | Script | Purpose |
 | --- | --- |
 | `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
-| `scripts/uninstall.sh` | Discoverable alias — downloads and runs `restore.sh` |
+| `scripts/uninstall.sh` | Discoverable alias - downloads and runs `restore.sh` |
 | `scripts/restore.sh` | Uninstalls sysext, deregisters init script, cleans up persistent storage |
-| `scripts/hailo-preinit.sh` | Boot-time script — activates sysext before apps start (bundled inside hailo.raw at `/usr/lib/hailo/`) |
+| `scripts/hailo-preinit.sh` | Boot-time script - activates sysext before apps start (bundled inside hailo.raw at `/usr/lib/hailo/`) |

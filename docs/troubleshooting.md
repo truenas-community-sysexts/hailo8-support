@@ -6,12 +6,12 @@ After TrueNAS updates the underlying kernel, the boot-time PREINIT script
 logs the following and `/dev/hailo0` will not initialize:
 
 ```
-[hailo-preinit] ERROR: Kernel version mismatch — running <new-kver> but sysext has module for <old-kver>
+[hailo-preinit] ERROR: Kernel version mismatch - running <new-kver> but sysext has module for <old-kver>
 [hailo-preinit] ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching <new-kver>
 [hailo-preinit] ERROR: Visit https://github.com/<repo>/releases
 ```
 
-This is **expected** behavior on a TrueNAS upgrade — not a bug. The Hailo
+This is **expected** behavior on a TrueNAS upgrade - not a bug. The Hailo
 kernel module is compiled against an exact kernel version, so the previous
 sysext is no longer compatible.
 
