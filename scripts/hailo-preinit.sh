@@ -122,8 +122,18 @@ ldconfig
 running_kver=$(uname -r)
 HAILO_KO="/usr/lib/modules/${running_kver}/extra/hailo_pci.ko"
 if [ -f "$HAILO_KO" ]; then
-    log "Loading Hailo module..."
-    insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
+    if [ -e /sys/module/hailo_pci ]; then
+        log "Hailo module already loaded, skipping insmod"
+    else
+        log "Loading Hailo module..."
+        insmod_rc=0
+        insmod_err=$(insmod "$HAILO_KO" 2>&1) || insmod_rc=$?
+        if [ "$insmod_rc" -ne 0 ]; then
+            log "ERROR: insmod hailo_pci failed (rc=${insmod_rc}): ${insmod_err:-no output from insmod}"
+            log "ERROR: check 'dmesg | grep -i hailo' for the kernel reason; a TrueNAS update can introduce a driver/kernel ABI mismatch"
+            log "ERROR: if so, install a hailo.raw release matching ${running_kver} from https://github.com/${HAILO_REPO}/releases"
+        fi
+    fi
 else
     SYSEXT_KVER=""
     for d in /usr/lib/modules/*/; do
