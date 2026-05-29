@@ -100,9 +100,9 @@ do_check() {
             "the PREINIT script merges it on boot; check 'systemctl status systemd-sysext'"
     fi
 
-    # 5. Persistent config dir (same resolver as install path)
+    # 5. Persistent config dir (read-only probe: no prompt, no auto-select)
     local persist_dir=""
-    if resolve_persist_dir; then
+    if resolve_persist_dir probe; then
         persist_dir="$PERSIST_DIR"
         record_pass "Persistent config at ${persist_dir}"
     else
@@ -218,8 +218,13 @@ if_real() {
 # Priority: --persist-path > --pool > existing config dir > only-data-pool
 #         > interactive prompt (multi-pool) > error (no tty + ambiguous)
 # Sets PERSIST_DIR on success; prints to stderr and returns 1 on failure.
+#
+# Call with "probe" (used by --check) for a read-only resolution: it never
+# prompts and never auto-selects a pool whose config dir doesn't exist yet,
+# so a diagnostic can't report a PASS for storage that was never set up.
 resolve_persist_dir() {
     PERSIST_DIR=""
+    local probe="${1:-}"
     local d p
     local -a existing=() pools=() choices=()
     local header n i
@@ -238,6 +243,14 @@ resolve_persist_dir() {
         [ -d "$d" ] && existing+=("$d")
     done
     shopt -u nullglob
+
+    if [ "$probe" = "probe" ]; then
+        if [ "${#existing[@]}" -ge 1 ]; then
+            PERSIST_DIR="${existing[0]}"
+            return 0
+        fi
+        return 1
+    fi
 
     if [ "${#existing[@]}" -eq 1 ]; then
         PERSIST_DIR="${existing[0]}"
