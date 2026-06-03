@@ -56,24 +56,6 @@ _source_hailo_lib || {
     exit 1
 }
 
-SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
-HAILO_RAW="${SYSEXT_DIR}/hailo.raw"
-
-# USR_WAS_WRITABLE: 1 while we have ${USR_DATASET}'s readonly=off and
-# haven't restored it yet. `rm -f` rarely fails, but anything between
-# off and on (including SIGINT/SIGTERM) should re-assert readonly so
-# we don't leave /usr writable until reboot.
-USR_WAS_WRITABLE=0
-USR_DATASET=""
-
-restore_usr_readonly() {
-    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-        USR_WAS_WRITABLE=0
-    fi
-}
-trap restore_usr_readonly EXIT INT TERM
-
 echo "=== Removing Hailo-8 sysext ==="
 
 # Pre-check: refuse to proceed if hailo_pci is in use unless --force is given.
@@ -125,27 +107,14 @@ if lsmod 2>/dev/null | awk '{print $1}' | grep -qx hailo_pci; then
     fi
 fi
 
-# Remove hailo sysext symlink and unmerge so /usr can be remounted writable.
-# Plain `systemd-sysext refresh` would re-merge any other active sysexts (e.g.
-# the NVIDIA sysext on TrueNAS SCALE), which keeps the /usr overlay in place
-# and makes the upcoming `zfs set readonly=off` fail.
+# Remove the hailo sysext symlink and unmerge to drop the /usr overlay. Plain
+# `systemd-sysext refresh` would re-merge any other active sysexts (e.g. the
+# NVIDIA sysext on TrueNAS SCALE) instead of dropping ours cleanly, so unmerge
+# everything first and re-merge the survivors below. The hailo.raw image itself
+# lives on the data pool and is removed with the persistent config further down.
 echo "Removing hailo sysext..."
 rm -f /run/extensions/hailo.raw
 systemd-sysext unmerge 2>/dev/null || true
-
-# Make /usr writable
-USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr (are you running as root?)"; exit 1; }
-[ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
-zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
-USR_WAS_WRITABLE=1
-
-# Remove hailo.raw
-echo "Removing hailo.raw..."
-rm -f "${HAILO_RAW}"
-
-# Restore read-only
-zfs set readonly=on "${USR_DATASET}"
-USR_WAS_WRITABLE=0
 
 # Re-merge any remaining sysexts (e.g. NVIDIA) that were deactivated by
 # the earlier `systemd-sysext unmerge`. Without this, co-installed sysexts

@@ -18,17 +18,6 @@ log() {
     logger -t hailo-preinit "$*" 2>/dev/null || true
 }
 
-USR_WAS_WRITABLE=0
-USR_DATASET=""
-
-restore_usr_readonly() {
-    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-        USR_WAS_WRITABLE=0
-    fi
-}
-trap restore_usr_readonly EXIT INT TERM
-
 # --- Find persistent config via glob ---
 # nullglob: if no pool matches, the loop body never runs (instead of
 # iterating once with the literal glob string). Localized via subshell-free
@@ -51,8 +40,11 @@ if [ ${#PERSIST_DIRS[@]} -gt 1 ]; then
 fi
 PERSIST_DIR="${PERSIST_DIRS[0]}"
 
-HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
-SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
+# The persistent blob on the data pool is the sysext image itself; we point
+# /run/extensions at it directly instead of copying it onto the boot pool.
+# /usr is wiped on every TrueNAS update, so a boot-pool copy would not survive
+# anyway, and writing to /usr means toggling its readonly ZFS property.
+HAILO_RAW="${PERSIST_DIR}/hailo.raw"
 
 # Read which repo this install came from (written by install.sh)
 HAILO_REPO="truenas-community-sysexts/hailo8-support"
@@ -65,56 +57,19 @@ if [ -f "${PERSIST_DIR}/.hailo-repo" ]; then
     fi
 fi
 
-if [ ! -f "$HAILO_RAW_BACKUP" ]; then
-    log "No hailo.raw backup at ${HAILO_RAW_BACKUP}, nothing to do"
+if [ ! -f "$HAILO_RAW" ]; then
+    log "No hailo.raw at ${HAILO_RAW}, nothing to do"
     exit 0
 fi
 
-# --- Compare checksums and reinstall if needed ---
-NEED_COPY=true
-if [ -f "$SYSEXT_TARGET" ]; then
-    INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
-    BACKUP_SUM=$(sha256sum "$HAILO_RAW_BACKUP" | awk '{print $1}')
-    if [ -z "$INSTALLED_SUM" ] || [ -z "$BACKUP_SUM" ]; then
-        log "WARNING: failed to read sha256 (installed='${INSTALLED_SUM}', backup='${BACKUP_SUM}'); reinstalling defensively"
-    elif [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
-        log "hailo.raw already matches backup, skipping copy"
-        NEED_COPY=false
-    else
-        log "hailo.raw differs from backup (update detected), reinstalling..."
-    fi
-else
-    log "hailo.raw missing, installing from backup..."
-fi
-
-if [ "$NEED_COPY" = true ]; then
-    log "Removing old hailo sysext..."
-    rm -f /run/extensions/hailo.raw
-    systemd-sysext unmerge 2>/dev/null || true
-
-    log "Making /usr writable..."
-    USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || true
-    if [ -n "$USR_DATASET" ]; then
-        zfs set readonly=off "$USR_DATASET"
-        USR_WAS_WRITABLE=1
-    fi
-
-    log "Copying hailo.raw from backup..."
-    if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
-        log "ERROR: Failed to copy hailo.raw from backup"
-        exit 1
-    fi
-
-    if [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET"
-        USR_WAS_WRITABLE=0
-    fi
-fi
-
-# --- Always activate sysext (symlink is on tmpfs, gone after reboot) ---
+# --- Activate sysext directly off the data pool ---
+# /run/extensions is tmpfs (gone after reboot), so we recreate the symlink
+# every boot. systemd-sysext loop-mounts the symlink target wherever it lives;
+# loop_device_make_by_path() is filesystem-agnostic, so a ZFS data-pool path
+# works the same as a boot-pool path.
 log "Activating hailo sysext..."
 mkdir -p /run/extensions
-ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
+ln -sf "$HAILO_RAW" /run/extensions/hailo.raw
 systemd-sysext refresh
 ldconfig
 

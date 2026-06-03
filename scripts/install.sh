@@ -52,11 +52,14 @@ do_check() {
             "run 'sudo insmod /usr/lib/modules/\$(uname -r)/extra/hailo_pci.ko' or re-run install.sh"
     fi
 
-    # 3. Sysext file present on disk
-    if [ -f "$HAILO_RAW" ]; then
-        record_pass "Sysext present at ${HAILO_RAW}"
+    # 3. Activation symlink present and resolves to an image. It lives on tmpfs
+    # (/run/extensions), so the PREINIT script recreates it on every boot; a
+    # missing symlink is a warning, not a hard failure.
+    if [ -L /run/extensions/hailo.raw ] && [ -f /run/extensions/hailo.raw ]; then
+        record_pass "Activation symlink /run/extensions/hailo.raw resolves to an image"
     else
-        record_fail "Sysext missing at ${HAILO_RAW}" "re-run install.sh"
+        record_warn "Activation symlink /run/extensions/hailo.raw missing or dangling" \
+            "the PREINIT script recreates it on boot; reboot or re-run install.sh"
     fi
 
     # 4. Sysext merged into /usr
@@ -275,8 +278,9 @@ resolve_persist_dir() {
 
 # REPO can be overridden via --repo=OWNER/NAME or HAILO_REPO env var.
 REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
-SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
-HAILO_RAW="${SYSEXT_DIR}/hailo.raw"
+# HAILO_RAW (the sysext image we activate) lives on the data pool and is set
+# to "${PERSIST_DIR}/hailo.raw" once the persistent pool is resolved below.
+HAILO_RAW=""
 
 # --- Parse CLI arguments ---
 LOCAL_RAW=""
@@ -438,19 +442,9 @@ if [ "$CHECK_MODE" = "1" ]; then
     exit $?
 fi
 
-# USR_WAS_WRITABLE: 1 while we have ${USR_DATASET}'s readonly=off and
-# haven't restored it yet. The cleanup trap re-asserts readonly=on so
-# any failure path between off and on (cp errors, SIGINT/SIGTERM) does
-# not leave /usr writable until reboot.
-USR_WAS_WRITABLE=0
-
 WORK_DIR=$(mktemp -d /tmp/hailo-install.XXXXXXXXXX)
 
 cleanup() {
-    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "${USR_DATASET:-}" ] && [ "$DRY_RUN" != "1" ]; then
-        zfs set readonly=on "${USR_DATASET}" 2>/dev/null || true
-        USR_WAS_WRITABLE=0
-    fi
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT INT TERM
@@ -671,6 +665,22 @@ fi
 echo ""
 echo "=== Installing hailo.raw ==="
 
+# --- Detect persistent storage pool ---
+# The sysext image lives only on the data pool; /run/extensions points at it
+# directly. Resolve the pool first so the blob is in place before we activate.
+if ! resolve_persist_dir; then
+    echo "ERROR: No persistent storage pool found; cannot install." >&2
+    exit 1
+fi
+echo "Persistent config directory: ${PERSIST_DIR}"
+if_real mkdir -p "$PERSIST_DIR"
+HAILO_RAW="${PERSIST_DIR}/hailo.raw"
+
+# Write the sysext image to the data pool. This is the single copy we activate
+# and the one that survives reboots and TrueNAS updates (no boot-pool copy).
+echo "Installing hailo.raw to ${HAILO_RAW}..."
+if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW}"
+
 # Remove hailo from sysext before modifying. If nothing is currently merged,
 # unmerge exits non-zero with "No extensions found" on stderr, which is fine.
 # A real failure (overlay held open by another process) must not be swallowed.
@@ -691,32 +701,9 @@ else
     echo "[dry-run] would: systemd-sysext unmerge"
 fi
 
-# Make /usr writable
-USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr"; exit 1; }
-[ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
-echo "Setting ${USR_DATASET} to writable..."
-if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: zfs set readonly=off ${USR_DATASET}"
-else
-    zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
-    USR_WAS_WRITABLE=1
-fi
-
-# Install new hailo.raw (backup is on persistent pool, no need for .bak).
-# If cp fails, the cleanup trap re-asserts readonly=on so we never
-# leave /usr writable on the failure path.
-echo "Installing new hailo.raw..."
-if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW}"
-
-# Restore read-only
-if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: zfs set readonly=on ${USR_DATASET}"
-else
-    zfs set readonly=on "${USR_DATASET}"
-    USR_WAS_WRITABLE=0
-fi
-
-# Activate sysext via symlink + refresh (TrueNAS middleware pattern)
+# Activate sysext via symlink + refresh (TrueNAS middleware pattern).
+# systemd-sysext loop-mounts the symlink target wherever it lives, so pointing
+# at the ZFS data-pool path works the same as a boot-pool path would.
 echo "Activating hailo sysext..."
 if_real mkdir -p /run/extensions
 if_real ln -sf "${HAILO_RAW}" /run/extensions/hailo.raw
@@ -766,18 +753,9 @@ fi
 echo ""
 echo "=== Setting up persistence ==="
 
-# --- Detect persistent storage pool ---
-if ! resolve_persist_dir; then
-    echo "  The sysext is loaded for this session but will NOT survive a reboot." >&2
-    exit 1
-fi
-
-echo "Persistent config directory: ${PERSIST_DIR}"
-if_real mkdir -p "$PERSIST_DIR"
-
-# --- Backup hailo.raw (with firmware inside) to persistent storage ---
-echo "Backing up hailo.raw to persistent storage..."
-if_real cp "${WORK_DIR}/hailo.raw" "${PERSIST_DIR}/hailo.raw"
+# The sysext image (${PERSIST_DIR}/hailo.raw) and its activation symlink were
+# put in place during install above. Here we record metadata and register the
+# boot-time PREINIT script that re-creates the symlink after each reboot.
 
 # Save HailoRT version for reference
 if [ "$DRY_RUN" = "1" ]; then
@@ -872,7 +850,7 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "No changes were made to the system."
     echo ""
     echo "Would have installed:"
-    echo "  Sysext target:     ${HAILO_RAW}"
+    echo "  Sysext image:      ${HAILO_RAW}"
     echo "  Persistent dir:    ${PERSIST_DIR}"
     echo "  HailoRT version:   ${HAILO_VERSION}"
     [ -n "${RELEASE_TAG:-}" ] && echo "  Release tag:       ${RELEASE_TAG}"
