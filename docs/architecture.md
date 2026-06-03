@@ -168,20 +168,22 @@ The `[ -e /sys/module/hailo_pci ]` guard makes the unit idempotent: the PREINIT 
 
 ## TrueNAS Sysext Activation
 
-TrueNAS does **not** use the standard `systemd-sysext merge` path (`/var/lib/extensions/`). Instead, the TrueNAS middleware uses a symlink pattern:
+TrueNAS does **not** use the standard `systemd-sysext merge` path (`/var/lib/extensions/`). Instead, activation uses a symlink in `/run/extensions/` that points at the image on the data pool:
 
 ```
-/usr/share/truenas/sysext-extensions/hailo.raw  ← the actual file
+/mnt/<pool>/.config/hailo/hailo.raw  ← the actual file (data pool, persistent)
            ↓ symlink
-/run/extensions/hailo.raw                       ← where systemd-sysext looks
+/run/extensions/hailo.raw            ← where systemd-sysext looks (tmpfs)
            ↓ systemd-sysext refresh
-/usr/ overlayfs merge                           ← files appear in /usr/
+/usr/ overlayfs merge                ← files appear in /usr/
 ```
+
+`systemd-sysext` loop-mounts whatever the symlink resolves to. `loop_device_make_by_path()` is filesystem-agnostic, so the image can live on the ZFS data pool just as well as on the boot pool, and there is no need to copy it under `/usr/` first. Keeping the only copy on the data pool also means it already survives a TrueNAS update (which reclones `/usr` from scratch).
 
 The activation sequence:
 
-1. Place `hailo.raw` at `/usr/share/truenas/sysext-extensions/hailo.raw`
-2. Create symlink: `ln -sf /usr/share/truenas/sysext-extensions/hailo.raw /run/extensions/hailo.raw`
+1. Image already on the data pool at `/mnt/<pool>/.config/hailo/hailo.raw`
+2. Create symlink: `ln -sf /mnt/<pool>/.config/hailo/hailo.raw /run/extensions/hailo.raw`
 3. `systemd-sysext refresh` - merges the sysext via overlayfs
 4. `ldconfig` - updates shared library cache
 
@@ -189,6 +191,8 @@ The deactivation sequence:
 
 1. `rm -f /run/extensions/hailo.raw`
 2. `systemd-sysext refresh` - unmerges
+
+Because nothing is written under `/usr/`, neither activation nor deactivation toggles the `/usr` ZFS `readonly` property.
 
 **Note:** Raw `systemd-sysext merge` does not work on TrueNAS because `/var/lib/extensions/` does not exist.
 
@@ -231,15 +235,15 @@ The PREINIT script does **not** download firmware from the network. The backed-u
 
 ## Persistence Mechanism
 
-TrueNAS updates replace the rootfs, wiping any sysext placed in `/usr/`. The persistence mechanism has two layers:
+TrueNAS updates replace the rootfs, wiping anything placed in `/usr/`. The persistence mechanism has two layers:
 
 ### Layer 1: Persistent Storage
 
-Config stored on a ZFS data pool (survives OS updates):
+The sysext image and its config live on a ZFS data pool (survives OS updates):
 
 ```text
 /mnt/<pool>/.config/hailo/
-├── hailo.raw                ← Backup of the sysext (includes firmware)
+├── hailo.raw                ← The sysext image itself (includes firmware), activated in place
 ├── .hailo-driver-version    ← HailoRT version (informational)
 └── hailo-preinit.sh         ← The PREINIT script itself
 ```
@@ -252,18 +256,16 @@ Why PREINIT and not POSTINIT:
 
 - PREINIT runs after ZFS pools are mounted but before the middleware starts apps
 - POSTINIT runs after the middleware is up, by which time app containers may already be starting
-- The script only uses `zfs`, `cp`, `systemd-sysext`, and `insmod` - all available at PREINIT time
-- The timeout is set to 30 seconds (default is 10, which is too tight for the copy + sysext refresh)
+- The script only uses `systemd-sysext`, `ln`, and `insmod` - all available at PREINIT time
+- The timeout is set to 30 seconds (default is 10, which is too tight for the sysext refresh)
 
 The script:
 
-1. Finds backup at `/mnt/<pool>/.config/hailo/hailo.raw` (scans `/mnt/*/.config/hailo/`)
-2. Compares SHA256 checksum with installed sysext
-3. If different (TrueNAS updated) or missing: copies from backup to `/usr/` (temporarily unlocks ZFS readonly)
-4. **Always** activates sysext via symlink + refresh (the `/run/extensions/` symlink is on tmpfs and gone after every reboot)
-5. Loads kernel module via `insmod`
+1. Finds the image at `/mnt/<pool>/.config/hailo/hailo.raw` (scans `/mnt/*/.config/hailo/`)
+2. Symlinks `/run/extensions/hailo.raw` at it and runs `systemd-sysext refresh` (the `/run/extensions/` symlink is on tmpfs and gone after every reboot)
+3. Loads kernel module via `insmod`
 
-The script is idempotent - on a normal reboot where checksums match, it skips the copy but still activates the sysext and loads the module.
+There is no copy step or ZFS `readonly` toggle: the image is activated in place on the data pool, so the same path works on a normal reboot and after a TrueNAS update. The script is idempotent - re-running it just re-points the symlink and refreshes.
 
 ### Pool Selection
 
@@ -290,7 +292,7 @@ This is why:
 
 - Firmware goes inside the sysext (merged into `/usr/lib/firmware/` via overlayfs)
 - `insmod` is used instead of `modprobe` (can't run `depmod` on read-only `/lib/modules`)
-- The install script temporarily unlocks `/usr` to place `hailo.raw`
+- `hailo.raw` is kept on the writable data pool and activated in place, so `/usr` never has to be unlocked
 
 ## Automated Version Monitoring
 
