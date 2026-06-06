@@ -108,14 +108,13 @@ detectors:
   hailo8l:
     type: hailo8l    # Use hailo8l for both Hailo-8 and Hailo-8L
     device: PCIe
-
-model:
-  width: 640
-  height: 640
-  input_tensor: nhwc
-  input_pixel_format: rgb
-  input_dtype: int
-  model_type: yolo-generic
+    model:
+      width: 640
+      height: 640
+      input_tensor: nhwc
+      input_pixel_format: rgb
+      input_dtype: int
+      model_type: yolo-generic
 ```
 
 > **Note:** Frigate uses `hailo8l` as the detector type for **both** Hailo-8 and Hailo-8L devices.
