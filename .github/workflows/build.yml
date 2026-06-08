@@ -19,6 +19,10 @@ on:
         description: 'GitHub Actions runner (leave blank to auto-resolve from TrueNAS release)'
         required: false
         default: ''
+      iso_url:
+        description: 'TESTING: full ISO URL override for non-standard channels (e.g. 26 beta on iso.sys.truenas.net). When set, skips download.truenas.com URL construction and the release job. Leave blank for normal builds.'
+        required: false
+        default: ''
       mark_latest:
         description: 'true = publish straight to Latest; false (default) = prerelease + hardware-test gate'
         required: false
@@ -43,6 +47,10 @@ on:
         type: string
         required: false
         default: ''
+      iso_url:
+        type: string
+        required: false
+        default: ''
       mark_latest:
         type: string
         required: false
@@ -60,6 +68,7 @@ jobs:
       hailo_driver_version: ${{ steps.params.outputs.hailo_driver_version }}
       train_name: ${{ steps.params.outputs.train_name }}
       runner: ${{ steps.params.outputs.runner }}
+      iso_url: ${{ steps.params.outputs.iso_url }}
       mark_latest: ${{ steps.params.outputs.mark_latest }}
       prerelease: ${{ steps.params.outputs.prerelease }}
     steps:
@@ -78,6 +87,7 @@ jobs:
           INPUT_HAILO_DRIVER_VERSION: ${{ inputs.hailo_driver_version }}
           INPUT_TRAIN_NAME: ${{ inputs.train_name }}
           INPUT_RUNNER: ${{ inputs.runner }}
+          INPUT_ISO_URL: ${{ inputs.iso_url }}
           INPUT_MARK_LATEST: ${{ inputs.mark_latest }}
         run: |
           set -euo pipefail
@@ -118,6 +128,7 @@ jobs:
             echo "hailo_driver_version=${HAILO}"
             echo "train_name=${TRAIN}"
             echo "runner=${RUNNER}"
+            echo "iso_url=${INPUT_ISO_URL}"
             echo "mark_latest=${MARK_LATEST}"
             echo "prerelease=${PRERELEASE}"
           } >> "$GITHUB_OUTPUT"
@@ -179,10 +190,20 @@ jobs:
 
       - name: Download TrueNAS ISO
         if: steps.iso-cache.outputs.cache-hit != 'true'
+        env:
+          ISO_URL_OVERRIDE: ${{ needs.resolve.outputs.iso_url }}
         run: |
-          TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
-          VERSION="${{ needs.resolve.outputs.truenas_version }}"
-          ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          # TESTING (26 beta): when an iso_url override is supplied, the standard
+          # download.truenas.com/TrueNAS-SCALE-<train>/<ver>/ layout does not apply
+          # (26 beta lives on iso.sys.truenas.net with no GITMANIFEST). Use the
+          # override verbatim.
+          if [ -n "$ISO_URL_OVERRIDE" ]; then
+            ISO_URL="$ISO_URL_OVERRIDE"
+          else
+            TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
+            VERSION="${{ needs.resolve.outputs.truenas_version }}"
+            ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          fi
           echo "Downloading: ${ISO_URL}"
           curl -fSL "$ISO_URL" -o /tmp/truenas.iso
           ls -lh /tmp/truenas.iso
@@ -774,6 +795,11 @@ jobs:
 
   release:
     needs: [resolve, build]
+    # TESTING: skip publishing entirely for iso_url-override (26 beta) runs.
+    # The test validates that the module compiles + smoke-tests; the build job's
+    # uploaded artifact is the deliverable. No releases or hardware-test issues
+    # are created on the production repo.
+    if: needs.resolve.outputs.iso_url == ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
