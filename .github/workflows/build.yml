@@ -239,9 +239,16 @@ jobs:
           ls -la /tmp/iso/
 
           # --- Extract the real rootfs from TrueNAS-SCALE.update (nested squashfs) ---
-          UPDATE_FILE="/tmp/iso/TrueNAS-SCALE.update"
-          if [ -f "$UPDATE_FILE" ]; then
-            echo "Found TrueNAS-SCALE.update ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
+          # TrueNAS 24/25 name the outer update squashfs "TrueNAS-SCALE.update";
+          # TrueNAS 26 (Halfmoon) renamed it to "TrueNAS.update". Accept either
+          # known name, then any *.update, before falling back to the installer's
+          # (header-less) live/filesystem.squashfs.
+          UPDATE_FILE=""
+          for cand in /tmp/iso/TrueNAS-SCALE.update /tmp/iso/TrueNAS.update /tmp/iso/*.update; do
+            if [ -f "$cand" ]; then UPDATE_FILE="$cand"; break; fi
+          done
+          if [ -n "$UPDATE_FILE" ]; then
+            echo "Found update squashfs: ${UPDATE_FILE} ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
             sudo rm -rf /tmp/update-contents
             sudo unsquashfs -d /tmp/update-contents "$UPDATE_FILE" rootfs.squashfs || {
               echo "ERROR: Failed to extract rootfs.squashfs from .update file"
