@@ -20,13 +20,13 @@ on:
         required: false
         default: ''
       mark_latest:
-        description: 'Mark this release as Latest on GitHub'
+        description: 'true = publish straight to Latest; false (default) = prerelease + hardware-test gate'
         required: false
         type: choice
         options:
           - 'true'
           - 'false'
-        default: 'true'
+        default: 'false'
 
   workflow_call:
     inputs:
@@ -46,7 +46,7 @@ on:
       mark_latest:
         type: string
         required: false
-        default: 'true'
+        default: 'false'
 
 permissions:
   contents: write
@@ -864,6 +864,7 @@ jobs:
                 `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
+                `<!-- release-tag: ${tag} -->`,
                 `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
                 `**HailoRT:** ${process.env.HAILO_DRIVER}`,
                 ``,
@@ -875,7 +876,7 @@ jobs:
                 ``,
                 `### Promote`,
                 `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
-                `Once verified, edit the [release](${releaseUrl}): uncheck **Set as a pre-release**, check **Set as the latest release**, then close this issue.`,
+                `Once you've verified it on hardware, **close this issue as completed** — that automatically promotes [\`${tag}\`](${releaseUrl}) to the latest release and appends the changelog.`,
               ].join('\n'),
             });
             console.log(`Created hardware-test issue for ${tag}`);
