@@ -63,7 +63,8 @@ jobs:
           CURRENT_VERSION: ${{ steps.tracked.outputs.truenas_version }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
           # Public scale-build tag listing — default GITHUB_TOKEN's 5000/hr
-          # quota is plenty. CHECK_BUILDS PAT is reserved for the push to main.
+          # quota is plenty for these read-only API calls; the app token is
+          # used only for the push to main and the build dispatch.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
