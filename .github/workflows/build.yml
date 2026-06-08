@@ -61,6 +61,7 @@ jobs:
       train_name: ${{ steps.params.outputs.train_name }}
       runner: ${{ steps.params.outputs.runner }}
       mark_latest: ${{ steps.params.outputs.mark_latest }}
+      prerelease: ${{ steps.params.outputs.prerelease }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -98,6 +99,11 @@ jobs:
           HAILO="${INPUT_HAILO_DRIVER_VERSION:-$TRACKED_HAILO}"
           RUNNER="${INPUT_RUNNER}"
           MARK_LATEST="${INPUT_MARK_LATEST:-true}"
+          # Unverified auto-builds (mark_latest=false) are published as a
+          # PRERELEASE so GitHub keeps them out of /releases/latest (and thus
+          # install.sh) until a human promotes them. make_latest=false alone
+          # does NOT hold this gate with action-gh-release@v3.
+          if [ "$MARK_LATEST" = "true" ]; then PRERELEASE="false"; else PRERELEASE="true"; fi
 
           if [ -z "$VERSION" ]; then VERSION="$TRACKED_VERSION"; fi
           if [ -z "$TRAIN" ];   then TRAIN="$TRACKED_TRAIN";     fi
@@ -113,6 +119,7 @@ jobs:
             echo "train_name=${TRAIN}"
             echo "runner=${RUNNER}"
             echo "mark_latest=${MARK_LATEST}"
+            echo "prerelease=${PRERELEASE}"
           } >> "$GITHUB_OUTPUT"
 
           echo "Resolved build parameters:"
@@ -121,6 +128,7 @@ jobs:
           echo "  train_name=${TRAIN}"
           echo "  runner=${RUNNER}"
           echo "  mark_latest=${MARK_LATEST}"
+          echo "  prerelease=${PRERELEASE}"
 
   build:
     needs: resolve
@@ -798,7 +806,7 @@ jobs:
             scripts/restore.sh
             scripts/uninstall.sh
           draft: false
-          prerelease: false
+          prerelease: ${{ needs.resolve.outputs.prerelease }}
           make_latest: ${{ needs.resolve.outputs.mark_latest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -866,8 +874,8 @@ jobs:
                 `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
                 ``,
                 `### Promote`,
-                `Once verified, go to the [release page](${releaseUrl}) and click **Set as latest**.`,
-                `Then close this issue.`,
+                `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
+                `Once verified, edit the [release](${releaseUrl}): uncheck **Set as a pre-release**, check **Set as the latest release**, then close this issue.`,
               ].join('\n'),
             });
             console.log(`Created hardware-test issue for ${tag}`);
