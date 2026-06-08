@@ -387,7 +387,10 @@ if isinstance(data, dict) and 'message' in data:
     sys.exit(1)
 version = os.environ['VERSION']
 prefix = f'v{version}-'
-matches = [r for r in data if r.get('tag_name', '').startswith(prefix)]
+# Exclude prereleases: an unverified build is published as a prerelease until a
+# human closes its hardware-test issue (promoting it to Latest). Installing one
+# would bypass that gate.
+matches = [r for r in data if r.get('tag_name', '').startswith(prefix) and not r.get('prerelease')]
 if not matches:
     print(f'No release found for TrueNAS version {version}', file=sys.stderr)
     tags = [r.get('tag_name', '?') for r in data]
