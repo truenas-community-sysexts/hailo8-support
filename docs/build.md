@@ -31,7 +31,7 @@ Hailo-8 firmware is proprietary and this project does not redistribute it. Inste
 
 A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitors both upstreams and updates `.github/tracked-versions.json`:
 
-- **TrueNAS half**: looks for new TrueNAS SCALE releases (highest stable `TS-*` tag in `truenas/scale-build`). When the matching ISO is live at `download.truenas.com`, it stages a bump of `truenas.version` (and `truenas.train` on a train rollover).
+- **TrueNAS half**: looks for new TrueNAS releases (highest stable `TS-*` tag in `truenas/scale-build`). When the matching ISO is live at `download.truenas.com`, it stages a bump of `truenas.version` (and `truenas.train` on a train rollover).
 - **HailoRT half**: looks for new tags reachable from `hailort-drivers`'s `hailo8` branch, capped at the version pinned in Frigate's `docker/main/install_hailort.sh` on `dev`. When the cap allows, it stages a bump of `hailo.driver`.
 
 If anything moved, the workflow writes the file in one commit, syncs `build.yml`'s dispatch defaults, and dispatches one build. Auto-builds publish releases without the "Latest" badge -- verify the build on Hailo-8 hardware, then promote it to Latest manually in the GitHub UI.
