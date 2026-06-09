@@ -1,6 +1,6 @@
-# Hailo-8 AI Accelerator Sysext for TrueNAS SCALE
+# Hailo-8 AI Accelerator Sysext for TrueNAS
 
-A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator support to TrueNAS SCALE. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
+A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator support to TrueNAS. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
 
 ## Documentation
 
@@ -43,7 +43,7 @@ This sysext builds the `hailo_pci` kernel module from the **`hailo8` branch** of
 
 ### Prerequisites
 
-- TrueNAS SCALE 25.10 or newer (the current target train and version are recorded in [`.github/tracked-versions.json`](.github/tracked-versions.json) and tracked automatically)
+- TrueNAS 25.10 or newer (the current target train and version are recorded in [`.github/tracked-versions.json`](.github/tracked-versions.json) and tracked automatically)
 - Hailo-8 PCIe AI accelerator installed and visible (`lspci | grep Hailo`)
 - Root/sudo access
 - Internet access (to download the release and firmware)

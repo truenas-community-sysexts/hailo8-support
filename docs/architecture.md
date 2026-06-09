@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project builds a systemd-sysext package (`hailo.raw`) containing the Hailo-8 AI accelerator driver for TrueNAS SCALE. The sysext is a squashfs image that overlays `/usr/` via overlayfs when activated with `systemd-sysext refresh`.
+This project builds a systemd-sysext package (`hailo.raw`) containing the Hailo-8 AI accelerator driver for TrueNAS. The sysext is a squashfs image that overlays `/usr/` via overlayfs when activated with `systemd-sysext refresh`.
 
 **Important:** Hailo-8 firmware (`hailo8_fw.bin`) is proprietary and governed by Hailo's EULA, which prohibits redistribution. This project does **not** distribute firmware. Instead, the install script downloads firmware directly from Hailo's servers at install time and injects it into the sysext squashfs before activation.
 
