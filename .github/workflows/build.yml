@@ -218,9 +218,16 @@ jobs:
           ls -la /tmp/iso/
 
           # --- Extract the real rootfs from TrueNAS-SCALE.update (nested squashfs) ---
-          UPDATE_FILE="/tmp/iso/TrueNAS-SCALE.update"
-          if [ -f "$UPDATE_FILE" ]; then
-            echo "Found TrueNAS-SCALE.update ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
+          # TrueNAS 24/25 name the outer update squashfs "TrueNAS-SCALE.update";
+          # TrueNAS 26 (Halfmoon) renamed it to "TrueNAS.update". Accept either
+          # known name, then any *.update, before falling back to the installer's
+          # (header-less) live/filesystem.squashfs.
+          UPDATE_FILE=""
+          for cand in /tmp/iso/TrueNAS-SCALE.update /tmp/iso/TrueNAS.update /tmp/iso/*.update; do
+            if [ -f "$cand" ]; then UPDATE_FILE="$cand"; break; fi
+          done
+          if [ -n "$UPDATE_FILE" ]; then
+            echo "Found update squashfs: ${UPDATE_FILE} ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
             sudo rm -rf /tmp/update-contents
             sudo unsquashfs -d /tmp/update-contents "$UPDATE_FILE" rootfs.squashfs || {
               echo "ERROR: Failed to extract rootfs.squashfs from .update file"
@@ -402,6 +409,36 @@ jobs:
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
 
+          # Detect the GCC major version the kernel was compiled with, instead of
+          # hardcoding one. Newer TrueNAS kernels move forward: 6.6/6.12 were
+          # built with gcc-12, but 26 beta's 6.18 needs gcc-13+ (it passes
+          # -fmin-function-alignment, which gcc-12 rejects). Prefer
+          # include/config/cc-version-text (plain-text, one line); fall back to
+          # include/generated/compile.h (LINUX_COMPILER macro). Handles both
+          # "gcc-12 (Debian ...)" and "gcc (Debian 12.2.0-14) 12.2.0".
+          HEADER_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
+          GCC_VER=""
+          extract_gcc_ver() {
+            local file="$1"
+            local ver
+            ver=$(grep -oP 'gcc-\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+            ver=$(grep -oP 'gcc\s+\(.*?\)\s+\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+          }
+          if [ -f "${HEADER_DIR}/include/config/cc-version-text" ]; then
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/config/cc-version-text")
+          fi
+          if [ -z "$GCC_VER" ] && [ -f "${HEADER_DIR}/include/generated/compile.h" ]; then
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/generated/compile.h")
+          fi
+          if [ -z "$GCC_VER" ]; then
+            echo "::warning title=gcc-version::could not detect GCC version from kernel headers, defaulting to gcc-12"
+            GCC_VER="12"
+          fi
+          echo "Kernel GCC version: gcc-${GCC_VER}"
+          echo "KERNEL_GCC=gcc-${GCC_VER}" >> "$GITHUB_ENV"
+
       # ── Build Hailo PCIe kernel module ──
       - name: Clone hailort-drivers
         run: |
@@ -416,14 +453,22 @@ jobs:
           echo "Checked out hailort-drivers:"
           cd /tmp/hailort-drivers && git log --oneline -1
 
+      - name: Install kernel-matching GCC
+        run: |
+          if ! command -v "$KERNEL_GCC" &>/dev/null; then
+            sudo apt-get install -y "$KERNEL_GCC"
+          fi
+          echo "Using compiler: $("$KERNEL_GCC" --version | head -1)"
+
       - name: Build hailo_pci kernel module
         run: |
           cd /tmp/hailort-drivers/linux/pcie
           KERNEL_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
 
-          echo "Building hailo_pci.ko against kernel ${KVER}..."
-          # Use GCC 12 to match the kernel's compiler (GCC 11 lacks -ftrivial-auto-var-init=zero)
-          make CC=gcc-12 KERNEL_DIR="$KERNEL_DIR" all
+          echo "Building hailo_pci.ko against kernel ${KVER} with ${KERNEL_GCC}..."
+          # Match the kernel's compiler (detected from the headers). A too-old GCC
+          # rejects flags newer kernels pass (e.g. 6.18 -> -fmin-function-alignment).
+          make CC="$KERNEL_GCC" KERNEL_DIR="$KERNEL_DIR" all
 
           echo "=== Module info ==="
           modinfo hailo_pci.ko
