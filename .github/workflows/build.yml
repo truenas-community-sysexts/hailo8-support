@@ -928,9 +928,17 @@ jobs:
                 ``,
                 `### Install THIS build to test it`,
                 `It is a **pre-release**, so the default \`latest\` install (and version auto-resolve) skip it. Install this exact build:`,
+                // Pre-releases have no firmware.sha256 fetched by auto-resolve,
+                // so install.sh runs in --local-raw mode and requires the firmware
+                // version + expected sha explicitly (see install.sh local-raw guard).
+                // Supply both: the version is the HailoRT driver, the sha comes from
+                // this release's firmware.sha256 asset.
                 "```bash",
-                `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/hailo.raw -o /tmp/hailo.raw`,
-                `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/install.sh | sudo bash -s -- /tmp/hailo.raw`,
+                `BASE=https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}`,
+                `curl -fsSL "$BASE/hailo.raw" -o /tmp/hailo.raw`,
+                `curl -fsSL "$BASE/install.sh" | sudo bash -s -- /tmp/hailo.raw \\`,
+                `  --firmware-version=${process.env.HAILO_DRIVER} \\`,
+                `  --expected-firmware-sha="$(curl -fsSL "$BASE/firmware.sha256")"`,
                 "```",
                 ``,
                 `### Test checklist`,
