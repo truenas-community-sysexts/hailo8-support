@@ -453,6 +453,41 @@ jobs:
           echo "Checked out hailort-drivers:"
           cd /tmp/hailort-drivers && git log --oneline -1
 
+      - name: Apply driver patches
+        run: |
+          # Re-apply fixes the pinned driver tag lacks (see patches/*.patch).
+          # We pin the driver to Frigate's bundled version (4.21.0), which
+          # predates Hailo's own mmap_read_lock fix for find_vma — and the
+          # hailo8 branch later reverted that fix anyway (present in 4.22,
+          # gone again in 4.23). The applier is idempotent: it skips any
+          # patch already present in the checked-out version and fails loud
+          # if a patch no longer applies. Run from the repo checkout (the
+          # default cwd) so it can reach the helper script and patches/.
+          .github/scripts/apply-driver-patches.sh \
+            /tmp/hailort-drivers \
+            "${GITHUB_WORKSPACE}/patches"
+
+      - name: Verify find_vma is locked
+        run: |
+          # Post-condition for the patch above, enforced regardless of which
+          # driver version is being built. find_vma() on Linux 6.12+ asserts
+          # the caller holds mmap_read_lock (mmap_assert_locked, rwsem.h:80);
+          # without it hailo_vdma_buffer_map() WARNs on every DMA map ioctl
+          # and can oops during inference. Refuse to ship a module where the
+          # find_vma(current->mm,...) call is not immediately preceded by
+          # mmap_read_lock(current->mm).
+          MEMC=/tmp/hailort-drivers/linux/vdma/memory.c
+          if ! awk '
+            /vma = find_vma\(current->mm/ { if (prev !~ /mmap_read_lock\(current->mm\)/) bad=1 }
+            { prev=$0 }
+            END { exit bad }
+          ' "$MEMC"; then
+            echo "::error title=find_vma-lock::find_vma(current->mm,...) in ${MEMC} is not guarded by mmap_read_lock — refusing to ship a driver that triggers the rwsem.h:80 WARN/oops"
+            grep -n -B2 -A1 'vma = find_vma(current->mm' "$MEMC" || true
+            exit 1
+          fi
+          echo "OK: find_vma(current->mm,...) is guarded by mmap_read_lock"
+
       - name: Install kernel-matching GCC
         run: |
           if ! command -v "$KERNEL_GCC" &>/dev/null; then

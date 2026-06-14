@@ -1,0 +1,43 @@
+vdma: hold mmap_read_lock around find_vma() in hailo_vdma_buffer_map
+
+On Linux 6.12+, find_vma() asserts that the caller holds the mmap read
+lock (mmap_assert_locked() in include/linux/rwsem.h). The 4.21.0 Hailo
+PCIe driver calls find_vma(current->mm, addr_or_fd) without that lock in
+hailo_vdma_buffer_map(), so every DMA buffer map ioctl trips a WARN:
+
+    WARNING: CPU: .. at include/linux/rwsem.h:80 find_vma+0x59/0x70
+     hailo_vdma_buffer_map+0x103/0x7e0 [hailo_pci]
+     hailo_vdma_buffer_map_ioctl+0xbb/0x280 [hailo_pci]
+     hailo_pcie_fops_unlockedioctl+0x1bd/0x6d0 [hailo_pci]
+
+It is usually "just" a WARN, but has been reported to escalate to an oops
+during active inference (Errno 5 I/O on the recordings volume).
+
+This is Hailo's own fix, taken verbatim from upstream hailort-drivers
+commit 8edb23b ("Suggested-by: Paul Kocialkowski"), which shipped in
+v4.22.0. Upstream then *reverted* it in v4.23.0 (the two lock lines were
+deleted again), so neither the version we pin (4.21.0, to match Frigate's
+bundled libhailort) nor the current hailo8-branch tip carries it. We
+re-apply it at build time.
+
+Note: this matches upstream's narrow critical section — the lock is
+dropped immediately after find_vma() even though `vma` is dereferenced
+afterwards (is_dmabuf_vma/create_fd_from_vma/vma->vm_flags). That is
+enough to satisfy mmap_assert_locked() and stop the WARN/oops, and keeps
+us byte-identical to what Hailo shipped in 4.22.0. Do not widen the scope
+without re-checking against upstream.
+
+diff --git a/linux/vdma/memory.c b/linux/vdma/memory.c
+index 7ad4a68..7a78cc5 100644
+--- a/linux/vdma/memory.c
++++ b/linux/vdma/memory.c
+@@ -167,7 +167,9 @@ struct hailo_vdma_buffer *hailo_vdma_buffer_map(struct device *dev,
+     }
+
+     if (HAILO_DMA_DMABUF_BUFFER != buffer_type) {
++        mmap_read_lock(current->mm);
+         vma = find_vma(current->mm, addr_or_fd);
++        mmap_read_unlock(current->mm);
+         if (IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING)) {
+             if (NULL == vma) {
+                 dev_err(dev, "no vma for virt_addr/size = 0x%08lx/0x%08zx\n", addr_or_fd, size);
