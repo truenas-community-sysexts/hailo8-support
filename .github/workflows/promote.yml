@@ -101,10 +101,38 @@ jobs:
             if (commits) changelog += `\n### Commits\n${commits}\n`;
             if (!prNotes && !commits) changelog += '\n_Initial release._\n';
 
+            // Only become the "Latest" release if this is the newest STABLE
+            // (non-pre-release) version. Promoting an OLDER build must not
+            // regress Latest to an older version — it still flips to a full
+            // (verified) release, but Latest stays on the newer one. (GitHub's
+            // make_latest:'legacy' picks by date, which would wrongly favour the
+            // just-promoted older build, so compare versions explicitly.) Stable
+            // tags are vX.Y[.Z...]-<driver>... with no '-' inside the version.
+            const tagVer = (t) => {
+              const m = (t || '').match(/^v(\d+(?:\.\d+)*)-/);
+              return m ? m[1].split('.').map(Number) : null;
+            };
+            const cmpVer = (a, b) => {
+              const n = Math.max(a.length, b.length);
+              for (let i = 0; i < n; i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
+              return 0;
+            };
+            const thisVer = tagVer(tag);
+            let newestStable = thisVer;  // this release is becoming non-pre-release
+            for (const r of rels) {        // rels = all other non-draft releases
+              if (r.prerelease) continue;  // betas / unverified builds can't be Latest
+              const v = tagVer(r.tag_name);
+              if (v && (!newestStable || cmpVer(v, newestStable) > 0)) newestStable = v;
+            }
+            const makeLatest = (thisVer && newestStable && cmpVer(thisVer, newestStable) >= 0) ? 'true' : 'false';
+
             await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
-              prerelease: false, make_latest: 'true',
+              prerelease: false, make_latest: makeLatest,
               body: (release.body || '') + changelog });
 
+            const latestNote = makeLatest === 'true'
+              ? 'and set it as the latest release'
+              : `as a full release (Latest stays on the newer \`${(newestStable || []).join('.')}\`)`;
             await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-              body: `✅ Verified — promoted [\`${tag}\`](${release.html_url}) to the latest release and appended the changelog.` });
-            core.info(`Promoted ${tag} to latest.`);
+              body: `✅ Verified — promoted [\`${tag}\`](${release.html_url}) ${latestNote}, and appended the changelog.` });
+            core.info(`Promoted ${tag} (make_latest=${makeLatest}).`);
