@@ -48,6 +48,13 @@ def truenas_sort_key(version):
     return (bp, rank, int(num) if num.isdigit() else 0)
 
 
+def is_preview_version(version):
+    """A BETA/RC TrueNAS version is the preview channel — matches how install.sh
+    classifies the running version (so the table's channel and the installer's
+    behaviour can never disagree)."""
+    return bool(re.search(r"-(?:BETA|RC)", version, re.IGNORECASE))
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: gen-supported-versions.py <README.md>", file=sys.stderr)
@@ -64,8 +71,17 @@ def main():
         print("WARNING: 100 releases returned; table may be truncated. Add pagination.",
               file=sys.stderr)
 
-    # One row per distinct TrueNAS version: keep the newest release for it.
-    by_version = {}
+    # Group non-draft releases by TrueNAS version, then keep the ONE release the
+    # installer would actually serve for that version, so the table lists exactly
+    # what the one-liner installs:
+    #   * Preview (BETA/RC) versions  -> newest release (a pre-release is fine; the
+    #     installer serves pre-releases to a box running that beta).
+    #   * Stable versions             -> newest PROMOTED (non-pre-release) release.
+    #     An unverified pre-release-only stable build is NOT auto-installable (it
+    #     is gated behind hardware-test promotion), so it is omitted until then.
+    # Channel is decided by the version STRING, not GitHub's pre-release flag, so
+    # an unverified stable build is never mislabelled as a beta.
+    releases_by_version = {}
     for r in data:
         if r.get("draft"):
             continue
@@ -81,8 +97,7 @@ def main():
             version, train = tm.group(1), ""
         ker = KER_RE.search(body)
         drv = DRV_RE.search(body)
-        published = r.get("published_at") or r.get("created_at") or ""
-        entry = {
+        releases_by_version.setdefault(version, []).append({
             "version": version,
             "train": train,
             "kver": ker.group(1) if ker else "",
@@ -91,17 +106,21 @@ def main():
             "prerelease": bool(r.get("prerelease")),
             "tag": tag,
             "url": r.get("html_url", ""),
-            "published": published,
-        }
-        cur = by_version.get(version)
-        if cur is None or published > cur["published"]:
-            by_version[version] = entry
+            "published": r.get("published_at") or r.get("created_at") or "",
+        })
 
-    rows = list(by_version.values())
-    stable = sorted((x for x in rows if not x["prerelease"]),
-                    key=lambda x: truenas_sort_key(x["version"]), reverse=True)
-    preview = sorted((x for x in rows if x["prerelease"]),
-                     key=lambda x: truenas_sort_key(x["version"]), reverse=True)
+    stable_rows, preview_rows = [], []
+    for version, rels in releases_by_version.items():
+        rels.sort(key=lambda x: x["published"], reverse=True)
+        if is_preview_version(version):
+            preview_rows.append(rels[0])
+        else:
+            promoted = [x for x in rels if not x["prerelease"]]
+            if promoted:
+                stable_rows.append(promoted[0])
+
+    stable = sorted(stable_rows, key=lambda x: truenas_sort_key(x["version"]), reverse=True)
+    preview = sorted(preview_rows, key=lambda x: truenas_sort_key(x["version"]), reverse=True)
 
     def row(x, channel):
         ver = x["version"] + (f" ({x['train']})" if x["train"] else "")
