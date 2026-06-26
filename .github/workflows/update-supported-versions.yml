@@ -1,0 +1,85 @@
+name: Update supported-versions table
+
+# Keep the "Supported TrueNAS versions" table in README.md in sync with the
+# repo's actual published releases. Triggered on every release change (publish,
+# edit, promote, delete, ...) so adds AND deletions are reflected within moments,
+# plus a daily safety net in case an event is ever missed. The table is
+# regenerated from the live Releases API, so it can never drift from what is
+# actually installable.
+
+on:
+  # Bot-published / promoted releases: build.yml and promote.yml act with the
+  # default GITHUB_TOKEN, so the `release` event below is suppressed for them
+  # (GitHub's recursion guard). workflow_run fires regardless of token, so it
+  # catches new auto-builds and promotions promptly.
+  workflow_run:
+    workflows: ["Build Hailo Sysext", "Promote release on hardware-test sign-off"]
+    types: [completed]
+  # Human / UI release actions (e.g. deleting a release) fire these immediately.
+  release:
+    types: [published, unpublished, edited, deleted, released, prereleased]
+  schedule:
+    - cron: '17 6 * * *'  # daily safety net, offset from check-releases (06:00 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialise: a burst of release events (draft -> publish -> promote) must not
+# race on the commit/push of README.md.
+concurrency:
+  group: update-supported-versions
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      # Mint a short-lived token from the CI app (in the default-branch ruleset
+      # bypass list) to push README.md back to main; github-actions[bot] is not
+      # exempt. Same pattern as check-releases.yml.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Regenerate table from releases
+        env:
+          # Read-only release listing; the default token's quota is plenty.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          # per_page=100 is well above the current release count; the generator
+          # warns if it ever hits the cap (then add pagination).
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 .github/scripts/gen-supported-versions.py README.md
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "supported-versions table already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: refresh supported-versions table from releases"
+          # Retry once on push rejection if main moved between checkout and now.
+          if ! git push; then
+            echo "Push failed, attempting rebase and retry..."
+            git pull --rebase || {
+              echo "::error title=Push failed::git pull --rebase failed after push rejection"
+              exit 1
+            }
+            git push || {
+              echo "::error title=Push failed::git push failed after rebase retry"
+              exit 1
+            }
+          fi
