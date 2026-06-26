@@ -41,9 +41,20 @@ This sysext builds the `hailo_pci` kernel module from the **`hailo8` branch** of
 
 ## Quick Start
 
+### Supported TrueNAS versions
+
+The sysext is built per TrueNAS version: the kernel module must match your exact running kernel. Builds come in two channels:
+
+- **Stable** — current TrueNAS SCALE 25.x train. Published as the **Latest** release.
+- **Preview** — TrueNAS SCALE 26 beta (e.g. `26.0.0-BETA.2`). Published as a **pre-release** and **experimental** (not for production).
+
+You don't pick a build by hand. The installer detects your running TrueNAS version (`midclt call system.info`) and downloads the matching sysext automatically: a 25.x box gets the stable build, a 26 beta box gets the matching preview build. Because previews are GitHub pre-releases, the [releases page](../../releases) lists both the **Latest** stable release and the **Pre-release** previews.
+
+If there is no build yet for your exact version (e.g. a brand-new point release), the installer says so and lists what is available; check back after the daily build, or [build it yourself](docs/build.md).
+
 ### Prerequisites
 
-- TrueNAS 25.10 or newer (the current target train and version are recorded in [`.github/tracked-versions.json`](.github/tracked-versions.json) and tracked automatically)
+- A supported TrueNAS SCALE version (25.x stable or 26 beta) on amd64 — see [Supported TrueNAS versions](#supported-truenas-versions) above; the installer auto-detects yours
 - Hailo-8 PCIe AI accelerator installed and visible (`lspci | grep Hailo`)
 - Root/sudo access
 - Internet access (to download the release and firmware)
