@@ -48,6 +48,10 @@ jobs:
               s = json.load(f)
           print(f"truenas_version={s['truenas']['version']}")
           print(f"train={s['truenas']['train']}")
+          print(f"preview_version={s['truenas_preview']['version']}")
+          print(f"preview_train={s['truenas_preview']['train']}")
+          print(f"preview_runner={s['truenas_preview']['runner']}")
+          print(f"preview_channel_url={s['truenas_preview']['channel_url']}")
           print(f"hailo_driver={s['hailo']['driver']}")
           PY
 
@@ -189,6 +193,89 @@ jobs:
             echo "changed=true"
             echo "version=${LATEST_VERSION}"
             echo "train=${NEW_TRAIN}"
+          } >> "$GITHUB_OUTPUT"
+
+      # ─────────────────────────────────────────────────────────────────────
+      # TrueNAS preview (beta) check: TrueNAS 26 betas are not published to
+      # scale-build tags or download.truenas.com and ship no GITMANIFEST. They
+      # live under a browsable channel (iso.sys.truenas.net/TrueNAS-26-BETA/).
+      # Scrape that listing for the highest X.Y[.Z]-BETA.N / -RC.N, gate on the
+      # ISO actually being uploaded, and bump truenas_preview.version. The
+      # runner is pinned in tracked-versions.json (no GITMANIFEST to resolve
+      # from); build.yml downloads the ISO via an iso_url override.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Check for new TrueNAS preview release
+        id: preview
+        env:
+          CURRENT_PREVIEW: ${{ steps.tracked.outputs.preview_version }}
+          CHANNEL_URL: ${{ steps.tracked.outputs.preview_channel_url }}
+        run: |
+          set -o pipefail
+          echo "Currently tracked preview: ${CURRENT_PREVIEW} (channel ${CHANNEL_URL})"
+
+          if ! LISTING=$(curl -fsSL "$CHANNEL_URL"); then
+            echo "Preview channel listing not reachable at ${CHANNEL_URL}. Skipping preview check this run."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Order beta/RC versions: numeric base first (26.0.0), then channel
+          # rank (BETA < RC), then the pre-release number. Shared by the
+          # "highest in listing" and "is it actually higher" comparisons.
+          read -r -d '' PREVIEW_SORT_PY <<'PY' || true
+          import sys
+          def key(v):
+              base, _, pre = v.partition('-')
+              bp = [int(x) for x in base.split('.')]
+              bp += [0] * (3 - len(bp))
+              typ, _, num = pre.partition('.')
+              rank = {'BETA': 0, 'RC': 1}.get(typ.upper(), -1)
+              return (bp, rank, int(num) if num.isdigit() else 0)
+          vers = [l.strip() for l in sys.stdin if l.strip()]
+          if vers:
+              print(sorted(vers, key=key)[-1])
+          PY
+
+          # Hrefs look like ./26.0.0-BETA.2/?wrap=1 — extract version dirs.
+          LATEST_PREVIEW=$(printf '%s' "$LISTING" \
+            | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?-(BETA|RC)\.[0-9]+' \
+            | sort -u \
+            | python3 -c "$PREVIEW_SORT_PY")
+
+          if [ -z "$LATEST_PREVIEW" ]; then
+            echo "No beta/RC versions found in channel listing. Skipping preview check."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Latest preview in channel: ${LATEST_PREVIEW}"
+
+          if [ "$LATEST_PREVIEW" = "$CURRENT_PREVIEW" ]; then
+            echo "No new TrueNAS preview release"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Only advance forward (guard against listing churn / dir deletion).
+          HIGHER=$(printf '%s\n%s\n' "$CURRENT_PREVIEW" "$LATEST_PREVIEW" | python3 -c "$PREVIEW_SORT_PY")
+          if [ "$HIGHER" != "$LATEST_PREVIEW" ]; then
+            echo "Latest preview ${LATEST_PREVIEW} is not higher than tracked ${CURRENT_PREVIEW} — ignoring"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ISO-file gate: the version dir can exist before the ISO finishes
+          # uploading. HEAD-check the actual file URL.
+          ISO_URL="${CHANNEL_URL}${LATEST_PREVIEW}/TrueNAS-${LATEST_PREVIEW}.iso"
+          if ! curl -fsI "$ISO_URL" >/dev/null 2>&1; then
+            echo "Preview ISO not yet published at ${ISO_URL}. Will retry on next scheduled run."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New TrueNAS preview release detected, ISO is published."
+          {
+            echo "changed=true"
+            echo "version=${LATEST_PREVIEW}"
           } >> "$GITHUB_OUTPUT"
 
       # ─────────────────────────────────────────────────────────────────────
@@ -348,11 +435,13 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       - name: Update tracked-versions
         id: write
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: steps.truenas.outputs.changed == 'true' || steps.preview.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
         env:
           TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          PREVIEW_CHANGED: ${{ steps.preview.outputs.changed }}
+          NEW_PREVIEW_VERSION: ${{ steps.preview.outputs.version }}
           HAILO_CHANGED: ${{ steps.hailo.outputs.changed }}
           NEW_HAILO_DRIVER: ${{ steps.hailo.outputs.driver }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
@@ -370,6 +459,8 @@ jobs:
           if os.environ['TRUENAS_CHANGED'] == 'true':
               s['truenas']['version'] = os.environ['NEW_TRUENAS_VERSION']
               s['truenas']['train']   = os.environ['NEW_TRAIN']
+          if os.environ['PREVIEW_CHANGED'] == 'true':
+              s['truenas_preview']['version'] = os.environ['NEW_PREVIEW_VERSION']
           if os.environ['HAILO_CHANGED'] == 'true':
               s['hailo']['driver']    = os.environ['NEW_HAILO_DRIVER']
           with open('.github/tracked-versions.json', 'w') as f:
@@ -391,22 +482,22 @@ jobs:
             FINAL_HAILO_DRIVER="${{ steps.tracked.outputs.hailo_driver }}"
           fi
 
-          # Compose a commit message that names what moved.
-          if [ "$TRUENAS_CHANGED" = "true" ] && [ "$HAILO_CHANGED" = "true" ]; then
+          # Compose a commit message that names whatever moved.
+          PARTS=()
+          if [ "$TRUENAS_CHANGED" = "true" ]; then
             if [ "$NEW_TRAIN" != "$CURRENT_TRAIN" ]; then
-              MSG="Update tracked versions: TrueNAS ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN}), HailoRT ${NEW_HAILO_DRIVER}"
+              PARTS+=("TrueNAS ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN})")
             else
-              MSG="Update tracked versions: TrueNAS ${NEW_TRUENAS_VERSION}, HailoRT ${NEW_HAILO_DRIVER}"
+              PARTS+=("TrueNAS ${NEW_TRUENAS_VERSION}")
             fi
-          elif [ "$TRUENAS_CHANGED" = "true" ]; then
-            if [ "$NEW_TRAIN" != "$CURRENT_TRAIN" ]; then
-              MSG="Update tracked TrueNAS version to ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN})"
-            else
-              MSG="Update tracked TrueNAS version to ${NEW_TRUENAS_VERSION}"
-            fi
-          else
-            MSG="Update tracked HailoRT driver version to ${NEW_HAILO_DRIVER}"
           fi
+          if [ "$PREVIEW_CHANGED" = "true" ]; then
+            PARTS+=("TrueNAS preview ${NEW_PREVIEW_VERSION}")
+          fi
+          if [ "$HAILO_CHANGED" = "true" ]; then
+            PARTS+=("HailoRT ${NEW_HAILO_DRIVER}")
+          fi
+          MSG="Update tracked versions: $(IFS=', '; echo "${PARTS[*]}")"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -426,12 +517,33 @@ jobs:
             echo "hailo_driver=${FINAL_HAILO_DRIVER}"
           } >> "$GITHUB_OUTPUT"
 
+          # Preview dispatch values (post-write). The ISO URL is derived from
+          # channel_url + version so the dispatch can hand build.yml a
+          # ready-to-use iso_url override.
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          with open('.github/tracked-versions.json') as f:
+              s = json.load(f)
+          pv = s['truenas_preview']
+          ver = pv['version']
+          print(f"preview_version={ver}")
+          print(f"preview_train={pv['train']}")
+          print(f"preview_runner={pv['runner']}")
+          print(f"preview_iso_url={pv['channel_url']}{ver}/TrueNAS-{ver}.iso")
+          PY
+
       # ─────────────────────────────────────────────────────────────────────
-      # Single dispatch with the post-update combo. mark_latest='false' is
-      # the gate that prevents an unverified auto-build from displacing the
-      # human-promoted Latest release.
+      # Dispatch build.yml. Two independent targets share the current driver:
+      #   - stable: built when TrueNAS stable or the HailoRT driver moved.
+      #   - preview: built when the TrueNAS beta or the driver moved.
+      # So a driver bump produces BOTH a 25.x and a 26-beta build ("each
+      # release has both"); a TrueNAS-only bump on one channel builds only that
+      # channel. mark_latest='false' on both keeps unverified auto-builds out of
+      # /releases/latest; preview builds additionally never promote (build.yml
+      # gives them the preview-hardware-test label and promote.yml refuses
+      # beta/RC tags).
       # ─────────────────────────────────────────────────────────────────────
-      - name: Trigger build
+      - name: Trigger stable build
         if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
         uses: actions/github-script@v9
         with:
@@ -450,4 +562,26 @@ jobs:
                 mark_latest:          'false'
               }
             });
-            console.log('Dispatched build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.runner.outputs.runner }}');
+            console.log('Dispatched stable build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.runner.outputs.runner }}');
+
+      - name: Trigger preview build
+        if: steps.preview.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build.yml',
+              ref: 'main',
+              inputs: {
+                truenas_version:      '${{ steps.write.outputs.preview_version }}',
+                hailo_driver_version: '${{ steps.write.outputs.hailo_driver }}',
+                train_name:           '${{ steps.write.outputs.preview_train }}',
+                runner:               '${{ steps.write.outputs.preview_runner }}',
+                iso_url:              '${{ steps.write.outputs.preview_iso_url }}',
+                mark_latest:          'false'
+              }
+            });
+            console.log('Dispatched preview build.yml: TrueNAS ${{ steps.write.outputs.preview_version }} (${{ steps.write.outputs.preview_train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.write.outputs.preview_runner }}, iso_url ${{ steps.write.outputs.preview_iso_url }}');

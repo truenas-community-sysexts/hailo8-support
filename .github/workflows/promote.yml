@@ -40,6 +40,18 @@ jobs:
             }
             const tag = m[1];
 
+            // Safety gate: never promote a TrueNAS preview (beta/RC) build to
+            // Latest — that would route stable installs to a beta via
+            // install.sh. Preview builds use the `preview-hardware-test` label
+            // (which this workflow's `if:` already excludes), but guard on the
+            // tag too in case an issue was mislabeled.
+            if (/-(?:BETA|RC)\b/i.test(tag)) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `ℹ️ \`${tag}\` is a TrueNAS preview (beta/RC) build. Preview builds stay pre-releases and are never promoted to Latest, so no change was made.` });
+              core.info(`Skipping promotion of preview tag ${tag}.`);
+              return;
+            }
+
             let release;
             try {
               release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;

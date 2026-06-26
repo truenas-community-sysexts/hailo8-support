@@ -19,6 +19,10 @@ on:
         description: 'GitHub Actions runner (leave blank to auto-resolve from TrueNAS release)'
         required: false
         default: ''
+      iso_url:
+        description: 'Full ISO URL override for non-standard channels (e.g. TrueNAS 26 beta on iso.sys.truenas.net, which has no GITMANIFEST). When set, skips download.truenas.com URL construction; requires an explicit runner. Leave blank for normal builds.'
+        required: false
+        default: ''
       mark_latest:
         description: 'true = publish straight to Latest; false (default) = prerelease + hardware-test gate'
         required: false
@@ -43,6 +47,10 @@ on:
         type: string
         required: false
         default: ''
+      iso_url:
+        type: string
+        required: false
+        default: ''
       mark_latest:
         type: string
         required: false
@@ -60,6 +68,7 @@ jobs:
       hailo_driver_version: ${{ steps.params.outputs.hailo_driver_version }}
       train_name: ${{ steps.params.outputs.train_name }}
       runner: ${{ steps.params.outputs.runner }}
+      iso_url: ${{ steps.params.outputs.iso_url }}
       mark_latest: ${{ steps.params.outputs.mark_latest }}
       prerelease: ${{ steps.params.outputs.prerelease }}
     steps:
@@ -78,6 +87,7 @@ jobs:
           INPUT_HAILO_DRIVER_VERSION: ${{ inputs.hailo_driver_version }}
           INPUT_TRAIN_NAME: ${{ inputs.train_name }}
           INPUT_RUNNER: ${{ inputs.runner }}
+          INPUT_ISO_URL: ${{ inputs.iso_url }}
           INPUT_MARK_LATEST: ${{ inputs.mark_latest }}
         run: |
           set -euo pipefail
@@ -110,6 +120,14 @@ jobs:
           if [ -z "$HAILO" ];   then HAILO="$TRACKED_HAILO";     fi
 
           if [ -z "$RUNNER" ]; then
+            if [ -n "$INPUT_ISO_URL" ]; then
+              # iso_url override targets a non-standard channel (e.g. 26 beta on
+              # iso.sys.truenas.net) that publishes no GITMANIFEST, so
+              # resolve-runner.sh cannot derive the Debian release. Require the
+              # runner to be pinned explicitly rather than guess.
+              echo "::error title=resolve::iso_url is set but no runner was provided. Non-standard ISO channels have no GITMANIFEST to auto-resolve from; pass an explicit runner (e.g. ubuntu-24.04)."
+              exit 1
+            fi
             RUNNER=$(.github/scripts/resolve-runner.sh "$TRAIN" "$VERSION")
           fi
 
@@ -118,6 +136,7 @@ jobs:
             echo "hailo_driver_version=${HAILO}"
             echo "train_name=${TRAIN}"
             echo "runner=${RUNNER}"
+            echo "iso_url=${INPUT_ISO_URL}"
             echo "mark_latest=${MARK_LATEST}"
             echo "prerelease=${PRERELEASE}"
           } >> "$GITHUB_OUTPUT"
@@ -127,6 +146,7 @@ jobs:
           echo "  hailo_driver_version=${HAILO}"
           echo "  train_name=${TRAIN}"
           echo "  runner=${RUNNER}"
+          echo "  iso_url=${INPUT_ISO_URL:-(none)}"
           echo "  mark_latest=${MARK_LATEST}"
           echo "  prerelease=${PRERELEASE}"
 
@@ -179,10 +199,20 @@ jobs:
 
       - name: Download TrueNAS ISO
         if: steps.iso-cache.outputs.cache-hit != 'true'
+        env:
+          ISO_URL_OVERRIDE: ${{ needs.resolve.outputs.iso_url }}
         run: |
-          TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
-          VERSION="${{ needs.resolve.outputs.truenas_version }}"
-          ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          # When an iso_url override is supplied, the standard
+          # download.truenas.com/TrueNAS-SCALE-<train>/<ver>/ layout does not
+          # apply (TrueNAS 26 beta lives on iso.sys.truenas.net with no
+          # GITMANIFEST). Use the override verbatim.
+          if [ -n "$ISO_URL_OVERRIDE" ]; then
+            ISO_URL="$ISO_URL_OVERRIDE"
+          else
+            TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
+            VERSION="${{ needs.resolve.outputs.truenas_version }}"
+            ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          fi
           echo "Downloading: ${ISO_URL}"
           curl -fSL "$ISO_URL" -o /tmp/truenas.iso
           ls -lh /tmp/truenas.iso
@@ -914,22 +944,35 @@ jobs:
         with:
           script: |
             const tag = `v${process.env.TRUENAS_VERSION}-hailo${process.env.HAILO_DRIVER}-r${process.env.RUN_NUMBER}`;
-            const title = `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`;
             const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
+
+            // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
+            // channel. Those builds must NEVER be promoted to Latest (that would
+            // route stable installs to a beta via install.sh), so they get a
+            // distinct label that promote.yml ignores. Their hardware-test issue
+            // is a verification record only — closing it does not promote.
+            const isPreview = /-(?:BETA|RC)\b/i.test(process.env.TRUENAS_VERSION);
+            const label = isPreview ? 'preview-hardware-test' : 'hardware-test';
+            const labelDescription = isPreview
+              ? 'Preview (TrueNAS beta) build verification — never auto-promoted to Latest'
+              : 'Auto-build awaiting hardware verification';
+            const title = isPreview
+              ? `Preview hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`
+              : `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`;
 
             // Ensure the label exists (idempotent — no-ops if already present).
             try {
               await github.rest.issues.createLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                name: 'hardware-test',
-                color: 'FBCA04',
-                description: 'Auto-build awaiting hardware verification',
+                name: label,
+                color: isPreview ? '5319E7' : 'FBCA04',
+                description: labelDescription,
               });
-              console.log('Created hardware-test label');
+              console.log(`Created ${label} label`);
             } catch (e) {
               if (e.status === 422) {
-                console.log('hardware-test label already exists');
+                console.log(`${label} label already exists`);
               } else {
                 throw e;
               }
@@ -940,21 +983,35 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'hardware-test',
+              labels: label,
               per_page: 100,
             });
             if (existing.data.some(i => i.title.includes(tag))) {
-              console.log(`Open hardware-test issue already exists for ${tag} — skipping`);
+              console.log(`Open ${label} issue already exists for ${tag} — skipping`);
               return;
             }
+
+            const promoteSection = isPreview
+              ? [
+                  `### Promote`,
+                  `This is a **TrueNAS ${process.env.TRUENAS_VERSION} preview build**. It is intentionally kept as a permanent **pre-release** and is **never** promoted to Latest, so stable installs are unaffected.`,
+                  `Once you've verified it on hardware, **close this issue as completed** to record the sign-off. The release stays a pre-release; install it explicitly via its tag.`,
+                ]
+              : [
+                  `### Promote`,
+                  `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
+                  `Once you've verified it on hardware, **close this issue as completed** — that automatically promotes [\`${tag}\`](${releaseUrl}) to the latest release and appends the changelog.`,
+                ];
 
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title,
-              labels: ['hardware-test'],
+              labels: [label],
               body: [
-                `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
+                isPreview
+                  ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently.`
+                  : `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
@@ -982,9 +1039,7 @@ jobs:
                 `- [ ] Confirm Frigate detects the Hailo device`,
                 `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
                 ``,
-                `### Promote`,
-                `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
-                `Once you've verified it on hardware, **close this issue as completed** — that automatically promotes [\`${tag}\`](${releaseUrl}) to the latest release and appends the changelog.`,
+                ...promoteSection,
               ].join('\n'),
             });
-            console.log(`Created hardware-test issue for ${tag}`);
+            console.log(`Created ${label} issue for ${tag}`);
