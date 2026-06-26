@@ -24,7 +24,7 @@ jobs:
     name: shellcheck shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Run shellcheck
         run: |
           shellcheck --severity=warning \
@@ -38,14 +38,14 @@ jobs:
     name: tracked-versions.json shape
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: .github/scripts/validate-tracked-versions.sh
 
   actionlint:
     name: actionlint workflows
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download actionlint
         # Pinned download script from upstream. actionlint auto-runs
         # shellcheck against `run:` blocks when shellcheck is on PATH —
