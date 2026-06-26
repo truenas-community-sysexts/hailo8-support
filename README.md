@@ -2,32 +2,6 @@
 
 A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator support to TrueNAS. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
 
-## Documentation
-
-| Doc | Contents |
-| --- | --- |
-| [Quick Start](#quick-start) | Install, verify, uninstall |
-| [docs/install.md](docs/install.md) | Install options, specific versions, persistence, scripts reference |
-| [docs/build.md](docs/build.md) | Build process, firmware handling, automated updates, custom builds |
-| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Recovery from kernel-mismatch errors after TrueNAS upgrades |
-
-## What's Included
-
-The `hailo.raw` sysext contains:
-
-| Component | Description |
-| --- | --- |
-| `hailo_pci.ko` | PCIe kernel module (compiled for exact TrueNAS kernel) |
-| `libhailort.so` | HailoRT runtime library |
-| `hailortcli` | HailoRT command-line tool |
-| `hailo-load.service` | Systemd service for automatic module loading |
-| `51-hailo-udev.rules` | Udev rules for `/dev/hailo*` permissions |
-
-> **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is **not** included in the release.
-> It is proprietary (Hailo's EULA prohibits redistribution) and is downloaded
-> directly from Hailo's servers during installation.
-
 ## Compatibility
 
 | Device | Supported | Notes |
@@ -145,6 +119,32 @@ model:
 - The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build — see [docs/troubleshooting.md](docs/troubleshooting.md#kernel-version-mismatch-after-a-truenas-update) for recovery steps.
 - Secure Boot: The unsigned kernel module may require disabling Secure Boot.
 - If firmware download fails during installation, the script aborts — the sysext will not be installed without firmware.
+
+## Documentation
+
+| Doc | Contents |
+| --- | --- |
+| [Quick Start](#quick-start) | Install, verify, uninstall |
+| [docs/install.md](docs/install.md) | Install options, specific versions, persistence, scripts reference |
+| [docs/build.md](docs/build.md) | Build process, firmware handling, automated updates, custom builds |
+| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Recovery from kernel-mismatch errors after TrueNAS upgrades |
+
+## What's Included
+
+The `hailo.raw` sysext contains:
+
+| Component | Description |
+| --- | --- |
+| `hailo_pci.ko` | PCIe kernel module (compiled for exact TrueNAS kernel) |
+| `libhailort.so` | HailoRT runtime library |
+| `hailortcli` | HailoRT command-line tool |
+| `hailo-load.service` | Systemd service for automatic module loading |
+| `51-hailo-udev.rules` | Udev rules for `/dev/hailo*` permissions |
+
+> **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is **not** included in the release.
+> It is proprietary (Hailo's EULA prohibits redistribution) and is downloaded
+> directly from Hailo's servers during installation.
 
 ## License
 
