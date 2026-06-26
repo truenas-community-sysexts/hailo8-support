@@ -192,7 +192,7 @@ jobs:
       # ── Obtain TrueNAS kernel headers from the release ISO ──
       - name: Restore cached TrueNAS ISO
         id: iso-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: /tmp/truenas.iso
           key: truenas-iso-${{ needs.resolve.outputs.truenas_version }}
@@ -219,14 +219,14 @@ jobs:
 
       - name: Save TrueNAS ISO to cache
         if: steps.iso-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: /tmp/truenas.iso
           key: truenas-iso-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Restore cached kernel headers
         id: headers-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: /tmp/kernel-headers
           key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
@@ -397,7 +397,7 @@ jobs:
 
       - name: Save kernel headers to cache
         if: steps.headers-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: /tmp/kernel-headers
           key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
@@ -542,7 +542,7 @@ jobs:
       # ── Build HailoRT userspace ──
       - name: Restore cached HailoRT build
         id: hailort-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: /tmp/hailort/build
           # Runner is part of the key: libhailort.so links against the
@@ -576,7 +576,7 @@ jobs:
 
       - name: Save HailoRT build to cache
         if: steps.hailort-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: /tmp/hailort/build
           key: hailort-build-v3-${{ needs.resolve.outputs.runner }}-${{ needs.resolve.outputs.hailo_driver_version }}
