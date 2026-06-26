@@ -51,6 +51,7 @@ The table below is generated from this repo's **actual published releases**, so 
 | Channel | TrueNAS version | Kernel | Driver | Release |
 | --- | --- | --- | --- | --- |
 | Stable | 25.10.4 (Goldeye) | `6.12.91-production+truenas` | HailoRT 4.21.0 | [`v25.10.4-hailo4.21.0-r37`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/v25.10.4-hailo4.21.0-r37) |
+| Stable | 25.10.3 (Goldeye) | `6.12.33-production+truenas` | HailoRT 4.21.0 | [`v25.10.3-hailo4.21.0-r39`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/v25.10.3-hailo4.21.0-r39) |
 | Preview (beta) | 26.0.0-BETA.2 (Halfmoon) | `6.18.23-production+truenas` | HailoRT 4.21.0 | [`v26.0.0-BETA.2-hailo4.21.0-r38`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/v26.0.0-BETA.2-hailo4.21.0-r38) |
 <!-- END supported-versions -->
 
