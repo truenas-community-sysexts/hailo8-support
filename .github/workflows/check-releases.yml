@@ -357,7 +357,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       # Hailo check: enumerate tags reachable from hailort-drivers' hailo8
       # branch (master tracks 5.x for Hailo-10/15 — does not support Hailo-8),
-      # then cap at the version pinned in Frigate's install scripts on dev.
+      # then cap at the HailoRT version Frigate pins on dev.
       # The cap is the gate; HailoRT enforces exact-match between kernel
       # driver and userspace library, and Frigate is the consumer the sysext
       # exists to serve.
@@ -393,10 +393,14 @@ jobs:
           # Parse defensively. Soft failures here are dangerous: if we silently
           # pick the wrong version, the next bump can ship a sysext that breaks
           # users on reboot. Both Frigate pin sources must agree, and the
-          # value must be a clean X.Y.Z release.
+          # value must be a clean X.Y.Z release. The two sources name the pin
+          # differently: the hailo detector plugin (HAILORT_VERSION, the
+          # HailoRT Frigate installs at first start) and the Hailo-8L host
+          # install script (hailo_version).
           parse_frigate_pin() {
             local url="$1"
             local label="$2"
+            local var="$3"
             local content line value count
             if ! content=$(curl -fsSL "$url"); then
               echo "::error title=Frigate pin parser::curl failed fetching ${label} (${url})"
@@ -404,25 +408,27 @@ jobs:
               return 1
             fi
             line=$(printf '%s\n' "$content" \
-              | grep -E '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=' \
+              | grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?${var}[[:space:]]*=" \
               || true)
             if [ -z "$line" ]; then
-              echo "::error title=Frigate pin parser::${label} contains no hailo_version assignment"
-              echo "ERROR: ${label} contains no hailo_version assignment" >&2
+              echo "::error title=Frigate pin parser::${label} contains no ${var} assignment"
+              echo "ERROR: ${label} contains no ${var} assignment" >&2
               return 1
             fi
             count=$(printf '%s\n' "$line" | wc -l | tr -d ' ')
             if [ "$count" -ne 1 ]; then
-              echo "::error title=Frigate pin parser::${label} has ${count} active hailo_version assignments (expected 1)"
-              echo "ERROR: ${label} has ${count} hailo_version assignments (expected 1):" >&2
+              echo "::error title=Frigate pin parser::${label} has ${count} active ${var} assignments (expected 1)"
+              echo "ERROR: ${label} has ${count} ${var} assignments (expected 1):" >&2
               printf '%s\n' "$line" >&2
               return 1
             fi
+            # The grep above pinned the line to "<var> = <value>", so the
+            # value is whatever follows the first "=", unquoted.
             value=$(printf '%s\n' "$line" \
-              | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\2/')
+              | sed -E 's/^[^=]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\1/')
             if ! printf '%s' "$value" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "::error title=Frigate pin parser::${label} hailo_version is not a clean X.Y.Z release: '${value}'"
-              echo "ERROR: ${label} hailo_version is not a clean X.Y.Z release: '${value}'" >&2
+              echo "::error title=Frigate pin parser::${label} ${var} is not a clean X.Y.Z release: '${value}'"
+              echo "ERROR: ${label} ${var} is not a clean X.Y.Z release: '${value}'" >&2
               echo "  raw line: ${line}" >&2
               return 1
             fi
@@ -430,24 +436,27 @@ jobs:
             printf '%s' "$value"
           }
 
-          if ! FRIGATE_MAIN_PIN=$(parse_frigate_pin \
-              "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/docker/main/install_hailort.sh" \
-              "frigate dev docker/main/install_hailort.sh"); then
-            echo "::error title=Frigate pin parser::failed to parse docker/main/install_hailort.sh — refusing to bump"
+          # Frigate dropped docker/main/install_hailort.sh when it moved to
+          # installing HailoRT at first start; the plugin constant is now the
+          # canonical pin.
+          if ! FRIGATE_PLUGIN_PIN=$(parse_frigate_pin \
+              "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/frigate/detectors/plugins/hailo.py" \
+              "frigate dev frigate/detectors/plugins/hailo.py" HAILORT_VERSION); then
+            echo "::error title=Frigate pin parser::failed to parse HAILORT_VERSION from frigate/detectors/plugins/hailo.py; refusing to bump"
             exit 1
           fi
           if ! FRIGATE_HAILO8L_PIN=$(parse_frigate_pin \
               "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/docker/hailo8l/user_installation.sh" \
-              "frigate dev docker/hailo8l/user_installation.sh"); then
-            echo "::error title=Frigate pin parser::failed to parse docker/hailo8l/user_installation.sh — refusing to bump"
+              "frigate dev docker/hailo8l/user_installation.sh" hailo_version); then
+            echo "::error title=Frigate pin parser::failed to parse hailo_version from docker/hailo8l/user_installation.sh; refusing to bump"
             exit 1
           fi
 
-          if [ "$FRIGATE_MAIN_PIN" != "$FRIGATE_HAILO8L_PIN" ]; then
-            echo "::error title=Frigate pins disagree::install_hailort.sh=${FRIGATE_MAIN_PIN}, user_installation.sh=${FRIGATE_HAILO8L_PIN} — refusing to guess which is canonical"
+          if [ "$FRIGATE_PLUGIN_PIN" != "$FRIGATE_HAILO8L_PIN" ]; then
+            echo "::error title=Frigate pins disagree::hailo.py HAILORT_VERSION=${FRIGATE_PLUGIN_PIN}, user_installation.sh hailo_version=${FRIGATE_HAILO8L_PIN}; refusing to guess which is canonical"
             exit 1
           fi
-          FRIGATE_PIN="$FRIGATE_MAIN_PIN"
+          FRIGATE_PIN="$FRIGATE_PLUGIN_PIN"
           echo "Frigate pinned version: ${FRIGATE_PIN}"
 
           if [ -z "$LATEST" ]; then
