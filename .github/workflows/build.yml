@@ -908,7 +908,7 @@ jobs:
 
           ### Verify
           ```bash
-          sudo ./install.sh --check
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash -s -- --check
           sudo hailortcli fw-control identify
           ```
 
@@ -967,7 +967,6 @@ jobs:
             hailo.raw.sha256
             hailo.kver
             firmware.sha256
-            scripts/hailo-lib.sh
             scripts/install.sh
             scripts/restore.sh
             scripts/uninstall.sh

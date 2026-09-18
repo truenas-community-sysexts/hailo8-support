@@ -184,6 +184,45 @@ if_real() {
     fi
 }
 
+# hailo_init_script_lookup
+#
+# Locate any registered TrueNAS init script related to this fork (matches
+# "hailo-preinit", "hailo-postinit", or ".config/hailo" in the command/script
+# field). Used for --check probing and for finding an existing entry to
+# update. restore.sh carries an identical copy for deregistration; the
+# helper is inlined in both because a `curl | bash` run has no sibling file
+# to source, and fetching one at run time made every install depend on what
+# the Latest release happened to ship. tests/test_script_helpers.py keeps
+# the two copies identical.
+#
+# Prints:
+#   <id>|<when>|<enabled>  if found (when=PREINIT/POSTINIT/...; enabled=True/False)
+#   (empty)                if no matching script is registered
+#   error                  if midclt is unreachable / response unparseable
+#
+# Always exits 0; callers branch on the printed token.
+hailo_init_script_lookup() {
+    local result
+    # Use %-formatting (not f-strings): the surrounding bash uses single
+    # quotes for the python source so we can't put `'` inside the python
+    # body, and an f-string with `"` keys would need `\"` escapes that
+    # don't parse inside f-string `{}` blocks.
+    result=$(midclt call initshutdownscript.query 2>/dev/null \
+        | python3 -c '
+import sys, json
+try:
+    scripts = json.load(sys.stdin)
+    for s in scripts:
+        cmd = s.get("command", "") or s.get("script", "")
+        if "hailo-preinit" in cmd or "hailo-postinit" in cmd or ".config/hailo" in cmd:
+            print("%s|%s|%s" % (s["id"], s.get("when", ""), s.get("enabled", False)), end="")
+            sys.exit(0)
+except Exception:
+    print("error", end="")
+' 2>/dev/null) || result=error
+    printf '%s' "$result"
+}
+
 # resolve_persist_dir — determine where persistent config lives.
 # Priority: --persist-path > --pool > existing config dir > only-data-pool
 #         > interactive prompt (multi-pool) > error (no tty + ambiguous)
@@ -406,36 +445,6 @@ if [ "$REPO" = "scyto/truenas-hailo" ]; then
     echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'."
     REPO="truenas-community-sysexts/hailo8-support"
 fi
-
-# Source shared library (provides hailo_init_script_lookup).
-# Try the sibling file first (checkout or extracted release); fall back to
-# downloading from the release for the curl|bash case.
-_source_hailo_lib() {
-    local dir
-    dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || dir=""
-    if [ -n "$dir" ] && [ -f "${dir}/hailo-lib.sh" ]; then
-        # shellcheck source=scripts/hailo-lib.sh
-        source "${dir}/hailo-lib.sh"
-        return 0
-    fi
-    local tmp
-    tmp=$(mktemp /tmp/hailo-lib.XXXXXXXXXX)
-    if curl -fsSL --max-time 30 \
-           "https://github.com/${REPO}/releases/latest/download/hailo-lib.sh" \
-           -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-        # shellcheck source=scripts/hailo-lib.sh
-        source "$tmp"
-        rm -f "$tmp"
-        return 0
-    fi
-    rm -f "$tmp"
-    return 1
-}
-_source_hailo_lib || {
-    echo "ERROR: Could not load hailo-lib.sh (not found locally, download failed)." >&2
-    echo "  Run from the release directory, or ensure network access to GitHub." >&2
-    exit 1
-}
 
 if [ "$CHECK_MODE" = "1" ]; then
     do_check
