@@ -204,8 +204,11 @@ jobs:
       # Resolve the new version's kernel from its rootfs.mtree manifest (small
       # text fetch, no ISO); if a release for (kernel, current driver) already
       # exists, no build is needed; only a PROMOTED one lets the tracked
-      # version advance (see check-kernel-coverage.py). An unresolvable
-      # kernel falls through to "build", the safe default.
+      # version advance (see check-kernel-coverage.py). Coverage only counts
+      # once the Latest release is kernel-keyed: the one-line installer runs
+      # Latest's install.sh, and a pre-migration one matches exact versions
+      # only. An unresolvable kernel or Latest falls through to "build", the
+      # safe default.
       # ─────────────────────────────────────────────────────────────────────
       - name: Resolve kernel and check coverage
         id: kernel
@@ -230,6 +233,12 @@ jobs:
           echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
           export NEW_KERNEL
 
+          # Rollout guard input. A failed lookup leaves LATEST_TAG empty,
+          # which the coverage script treats as not kernel-keyed (build).
+          LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null) || LATEST_TAG=""
+          echo "Latest release: ${LATEST_TAG:-(lookup failed)}"
+          export LATEST_TAG
+
           # A transient API or parse failure must not fail the daily check:
           # the safe default is covered=false (build it).
           COVERAGE=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -248,7 +257,7 @@ jobs:
               echo "covered_pending=true" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "No release covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
+              echo "No release the one-line installer can serve covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
               echo "covered=false" >> "$GITHUB_OUTPUT"
               ;;
           esac

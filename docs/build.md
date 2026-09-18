@@ -52,6 +52,13 @@ release's kernel. The pipeline is keyed accordingly:
   tracked version holds until that build is promoted (so the kernel keeps a
   rebuild path if the build is deleted). Preview (BETA/RC) builds never
   count as coverage.
+- Coverage only counts while the Latest release is kernel-keyed (its tag
+  starts with `k`). The one-line installer runs the install.sh attached to
+  Latest, and until the first k-tagged build is promoted that is the
+  pre-migration installer, which matches exact TrueNAS versions only; a
+  skipped build would leave the new version with nothing it can serve. So
+  until then, and whenever the Latest lookup fails, every new stable
+  version builds as before.
 - A new kernel, a driver bump, or an unresolvable kernel always builds.
 - install.sh selects releases by matching `uname -r` against the release's
   `Target kernel` row, falling back to the short kernel encoded in a k-tag

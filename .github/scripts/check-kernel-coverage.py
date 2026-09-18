@@ -20,6 +20,14 @@ channel never serves them. A k-tag whose body lost the Target kernel row
 counts only once promoted: unpromoted, it cannot be told apart from a
 preview build, and the safe default is to build.
 
+Rollout guard: coverage is only reported while the Latest release is
+kernel-keyed ($LATEST_TAG starts with "k"). The one-line installer runs the
+install.sh attached to Latest, and until a k-tagged build is promoted that
+is the pre-migration installer, which matches exact TrueNAS versions only:
+skipping a build would leave the new version with nothing it can serve. An
+empty $LATEST_TAG (the lookup failed) counts as not kernel-keyed, so the
+safe default is to build.
+
 Matching rules mirror install.sh's release-selection snippet;
 tests/test_kernel_coverage.py holds both to the shared fixtures.
 """
@@ -47,6 +55,7 @@ def main():
     short = kver.split('-')[0]
     driver = os.environ['CURRENT_DRIVER']
     version = os.environ.get('NEW_VERSION', '')
+    latest = os.environ.get('LATEST_TAG', '')
     ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
     hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
     pre_re = re.compile(r'-(BETA|RC)', re.IGNORECASE)
@@ -54,6 +63,7 @@ def main():
     def train_key(v):
         return '.'.join(v.partition('-')[0].split('.')[:2])
 
+    found = None
     pending = None
     for r in data:
         if r.get('draft'):
@@ -79,12 +89,23 @@ def main():
         if tk == kver or (not tk and promoted
                           and tag.startswith(f'k{short}-hailo')):
             if promoted:
-                print(f'promoted {tag}')
-                return
+                found = ('promoted', tag)
+                break
             if pending is None:
                 pending = tag
-    if pending:
-        print(f'pending {pending}')
+    if found is None and pending:
+        found = ('pending', pending)
+    if found is None:
+        return
+    kind, tag = found
+    # Rollout guard (see module docstring).
+    if not latest.startswith('k'):
+        print(f'NOTE: {tag} covers kernel {kver}, but the Latest'
+              f' release ({latest or "lookup failed"}) is not kernel-keyed, so'
+              ' the one-line installer cannot serve this version by kernel;'
+              ' building.', file=sys.stderr)
+        return
+    print(f'{kind} {tag}')
 
 
 if __name__ == '__main__':

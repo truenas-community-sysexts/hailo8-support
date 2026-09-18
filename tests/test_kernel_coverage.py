@@ -16,19 +16,28 @@ SCRIPT = (Path(__file__).resolve().parents[1]
           / ".github" / "scripts" / "check-kernel-coverage.py")
 
 K93 = "6.12.93-production+truenas"
+# Post-migration default: a kernel-keyed build is Latest, so coverage counts.
+# RolloutGuard covers the pre-migration and failed-lookup cases.
+KTAG_LATEST = "k6.12.91-hailo4.21.0-r45"
+VTAG_LATEST = "v25.10.5-hailo4.21.0-r40"
 
 
-def run_coverage(releases, kver=K93, driver="4.21.0", version="25.10.6",
-                 raw=None):
+def run_coverage_full(releases, kver=K93, driver="4.21.0", version="25.10.6",
+                      raw=None, latest=KTAG_LATEST):
     text = raw if raw is not None else json.dumps(releases)
+    env = {"NEW_KERNEL": kver, "CURRENT_DRIVER": driver,
+           "NEW_VERSION": version, "PATH": "/usr/bin:/bin"}
+    if latest is not None:
+        env["LATEST_TAG"] = latest
     p = subprocess.run(["python3", str(SCRIPT)], input=text,
-                       capture_output=True, text=True,
-                       env={"NEW_KERNEL": kver, "CURRENT_DRIVER": driver,
-                            "NEW_VERSION": version,
-                            "PATH": "/usr/bin:/bin"})
+                       capture_output=True, text=True, env=env)
     if p.returncode != 0:
         raise AssertionError(f"script failed: {p.stderr}")
-    return p.stdout.strip()
+    return p
+
+
+def run_coverage(releases, **kwargs):
+    return run_coverage_full(releases, **kwargs).stdout.strip()
 
 
 class Coverage(unittest.TestCase):
@@ -140,6 +149,45 @@ class TrainScope(unittest.TestCase):
         rel = dict(release("k6.12.93-hailo4.21.0-r50"), body="")
         self.assertEqual(run_coverage([rel]),
                          "promoted k6.12.93-hailo4.21.0-r50")
+
+
+class RolloutGuard(unittest.TestCase):
+    # The one-line installer runs the install.sh attached to Latest. Until a
+    # k-tagged build is promoted, that is the pre-migration installer, which
+    # matches exact TrueNAS versions only, so a skipped build would leave the
+    # new version with nothing the one-liner can serve.
+    PROMOTED = [release("v25.10.5-hailo4.21.0-r40", "25.10.5", kver=K93)]
+    PENDING = [release("k6.12.93-hailo4.21.0-r44", "25.10.5", kver=K93,
+                       prerelease=True)]
+
+    def test_ktag_latest_and_covered_skips(self):
+        self.assertEqual(run_coverage(self.PROMOTED, latest=KTAG_LATEST),
+                         "promoted v25.10.5-hailo4.21.0-r40")
+
+    def test_vtag_latest_and_covered_builds(self):
+        p = run_coverage_full(self.PROMOTED, latest=VTAG_LATEST)
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertIn(VTAG_LATEST, p.stderr)
+
+    def test_failed_latest_lookup_builds(self):
+        self.assertEqual(run_coverage(self.PROMOTED, latest=""), "")
+        self.assertEqual(run_coverage(self.PROMOTED, latest=None), "")
+
+    def test_ktag_latest_and_pending_holds(self):
+        self.assertEqual(run_coverage(self.PENDING, latest=KTAG_LATEST),
+                         "pending k6.12.93-hailo4.21.0-r44")
+
+    def test_vtag_latest_and_pending_builds(self):
+        self.assertEqual(run_coverage(self.PENDING, latest=VTAG_LATEST), "")
+
+    def test_failed_latest_lookup_and_pending_builds(self):
+        self.assertEqual(run_coverage(self.PENDING, latest=""), "")
+
+    def test_ktag_latest_keeps_train_scope(self):
+        # The guard only ever turns coverage off; a cross-train release
+        # still never covers when the Latest is kernel-keyed.
+        rels = [release("v25.04.2-hailo4.21.0-r30", "25.04.2", kver=K93)]
+        self.assertEqual(run_coverage(rels, latest=KTAG_LATEST), "")
 
 
 class Pagination(unittest.TestCase):
