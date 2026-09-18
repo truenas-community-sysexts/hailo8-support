@@ -455,6 +455,10 @@ WORK_DIR=$(mktemp -d /tmp/hailo-install.XXXXXXXXXX)
 
 cleanup() {
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
+    # A staged image an interrupted install left next to the live one.
+    if [ "$DRY_RUN" != "1" ] && [ -n "${HAILO_RAW_NEW:-}" ]; then
+        rm -f "$HAILO_RAW_NEW"
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -847,8 +851,14 @@ HAILO_RAW="${PERSIST_DIR}/hailo.raw"
 
 # Write the sysext image to the data pool. This is the single copy we activate
 # and the one that survives reboots and TrueNAS updates (no boot-pool copy).
+# On a reinstall the existing file is the live, loop-mounted image, so it must
+# not be rewritten in place: stage the new image in the same directory and
+# rename it over the old one. The rename is atomic, and the mounted loop
+# device keeps the old inode until the unmerge below.
 echo "Installing hailo.raw to ${HAILO_RAW}..."
-if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW}"
+HAILO_RAW_NEW="${HAILO_RAW}.new"
+if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW_NEW}"
+if_real mv -f "${HAILO_RAW_NEW}" "${HAILO_RAW}"
 
 # Remove hailo from sysext before modifying. If nothing is currently merged,
 # unmerge exits non-zero with "No extensions found" on stderr, which is fine.
