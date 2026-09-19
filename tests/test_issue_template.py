@@ -150,6 +150,27 @@ class Commands(unittest.TestCase):
             body = render_issue(**params)["body"]
             self.assertRegex(body, rf"(?m)^uname -r +# must print {re.escape(params['kver'])}$")
 
+    def test_verify_steps_explain_known_noise(self):
+        # Installing over a build for another kernel: the previous boot's
+        # PREINIT mismatch error shows as 1 fail until the step 4 reboot.
+        # hailortcli cannot write the root-owned hailort.log the installer
+        # left behind. Both notes must appear in both channels.
+        for params in (STABLE, PREVIEW):
+            body = render_issue(**params)["body"]
+            step3 = body[body.index("### 3. Verify"):body.index("### 4. Reboot and re-verify")]
+            step4 = body[body.index("### 4. Reboot and re-verify"):body.index("### 5. Report")]
+            self.assertIn("Upgrading over an earlier build for a different kernel", step3)
+            self.assertIn("`--check` here also shows 1 fail, `PREINIT logged an error this boot` "
+                          "with a `Kernel version mismatch` message", step3)
+            self.assertIn("clears after the reboot in step 4, where 0 fail is required", step3)
+            self.assertIn('"No hailo-preinit entries this boot"', step3)
+            for step in (step3, step4):
+                self.assertIn("hailortcli fw-control identify", step)
+                self.assertIn("`Cannot create log file hailort.log`", step)
+        self.assertIn("PREINIT logged an error this boot", INSTALL_SH.read_text())
+        self.assertIn("Kernel version mismatch",
+                      (ROOT / "scripts" / "hailo-preinit.sh").read_text())
+
     def test_sign_off_matches_the_channel(self):
         self.assertIn("promotes", render_issue(**STABLE)["body"])
         preview = render_issue(**PREVIEW)["body"]
