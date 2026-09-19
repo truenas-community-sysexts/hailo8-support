@@ -15,8 +15,11 @@ from two sources:
 
 A kernel with no release still gets a row: "not built yet" when no build
 exists, or the unpromoted build's tag marked "awaiting hardware-test
-promotion" when one is gated behind verification. The table is a complete
-coverage map instead of a list of what happens to exist.
+promotion" when one is gated behind verification. A preview (beta) version
+likewise names its newest build approved for its train, or else the newest
+build marked "awaiting hardware test": the installer serves nothing
+unapproved on any channel. The table is a complete coverage map instead of a
+list of what happens to exist.
 
 Usage (see .github/workflows/update-supported-versions.yml):
     gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -45,6 +48,22 @@ TAG_VER_RE = re.compile(r"^v(.+?)-(?:gasket|hailo|hailort|memryx)", re.IGNORECAS
 # the only kernel signal left when a body lost its rows.
 KTAG_KVER_RE = re.compile(r"^k(\d+(?:\.\d+)*)-(?:gasket|hailo|hailort|memryx)",
                           re.IGNORECASE)
+# The line promote.yml appends to a release's notes when a hardware test on a
+# train signs the build off (the installer's pattern).
+VERIFIED_RE = re.compile(r"^[ \t]*<!--\s*verified-train:\s*([^\s>]+?)\s*-->", re.M)
+
+
+def train_key(version):
+    """Train key of a TrueNAS version, the installer's rule: the major
+    version from 26 on (every 26.x release, betas included, is one train),
+    major.minor before that. '' when the version has none."""
+    major, dot, rest = version.partition(".")
+    if not major.isdigit():
+        return ""
+    if int(major) >= 26:
+        return major
+    minor = re.match(r"[0-9]*", rest).group(0)
+    return major + "." + minor if dot and minor else ""
 
 
 def truenas_sort_key(version):
@@ -104,6 +123,7 @@ def parse_releases(data):
             # "Gasket driver" -> "Gasket 1.0-18.4"; "MemryX SDK" -> "MemryX SDK 2.1"
             "driver": f"{drv.group(1).replace(' driver', '')} {drv.group(2)}" if drv else "",
             "prerelease": bool(r.get("prerelease")),
+            "trains": sorted(set(VERIFIED_RE.findall(body))),
             "tag": tag,
             "url": r.get("html_url", ""),
             "published": r.get("published_at") or r.get("created_at") or "",
@@ -136,7 +156,11 @@ def resolve_ktag_kernels(releases_by_version, kernel_map):
 
 def served_releases(releases_by_version):
     """The one release install.sh serves per version:
-      * Preview (BETA/RC) versions -> newest release (prereleases allowed).
+      * Preview (BETA/RC) versions -> newest release a hardware test approved
+        for the version's train (a verified-train line in its notes; preview
+        builds stay prereleases). With none approved, the newest build is
+        still listed, flagged "pending": nothing installs it until its test
+        signs it off.
       * Stable versions -> newest PROMOTED (non-prerelease) release. An
         unverified prerelease-only stable build is not auto-installable (it is
         gated behind hardware-test promotion), so it is omitted until then."""
@@ -146,7 +170,8 @@ def served_releases(releases_by_version):
             continue  # lost-body k-tags only feed kernel_winners
         rels.sort(key=lambda x: x["published"], reverse=True)
         if is_preview_version(version):
-            preview[version] = rels[0]
+            approved = [x for x in rels if train_key(version) in x["trains"]]
+            preview[version] = approved[0] if approved else dict(rels[0], pending=True)
         else:
             promoted = [x for x in rels if not x["prerelease"]]
             if promoted:
@@ -258,6 +283,13 @@ def build_rows(stable, preview, kernel_map, winners, pending=None):
 
     for version in sorted(preview, key=truenas_sort_key, reverse=True):
         r = preview[version]
+        if r.get("pending"):
+            rows.append({"channel": "Preview (beta)", "kver": r["kver"],
+                         "versions": version, "driver": r["driver"],
+                         "tag": "", "url": "",
+                         "pending_tag": r["tag"], "pending_url": r["url"],
+                         "pending_note": "awaiting hardware test"})
+            continue
         rows.append({"channel": "Preview (beta)", "kver": r["kver"],
                      "versions": version, "driver": r["driver"],
                      "tag": r["tag"], "url": r["url"]})
@@ -278,7 +310,7 @@ def render_table(rows):
         elif row.get("pending_tag"):
             pt = (f"[`{row['pending_tag']}`]({row['pending_url']})"
                   if row.get("pending_url") else f"`{row['pending_tag']}`")
-            rel = f"{pt} _(awaiting hardware-test promotion)_"
+            rel = f"{pt} _({row.get('pending_note', 'awaiting hardware-test promotion')})_"
         else:
             rel = "_not built yet_"
         drv = row["driver"] or "-"

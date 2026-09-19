@@ -23,14 +23,6 @@ on:
         description: 'Full ISO URL override for non-standard channels (e.g. TrueNAS 26 beta on iso.sys.truenas.net, which has no GITMANIFEST). When set, skips download.truenas.com URL construction; requires an explicit runner. Leave blank for normal builds.'
         required: false
         default: ''
-      mark_latest:
-        description: 'true = publish straight to Latest; false (default) = prerelease + hardware-test gate'
-        required: false
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-        default: 'false'
 
   workflow_call:
     inputs:
@@ -51,10 +43,6 @@ on:
         type: string
         required: false
         default: ''
-      mark_latest:
-        type: string
-        required: false
-        default: 'false'
 
 permissions:
   contents: write
@@ -77,7 +65,6 @@ jobs:
       train_name: ${{ steps.params.outputs.train_name }}
       runner: ${{ steps.params.outputs.runner }}
       iso_url: ${{ steps.params.outputs.iso_url }}
-      mark_latest: ${{ steps.params.outputs.mark_latest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -95,7 +82,6 @@ jobs:
           INPUT_TRAIN_NAME: ${{ inputs.train_name }}
           INPUT_RUNNER: ${{ inputs.runner }}
           INPUT_ISO_URL: ${{ inputs.iso_url }}
-          INPUT_MARK_LATEST: ${{ inputs.mark_latest }}
         run: |
           set -euo pipefail
 
@@ -115,9 +101,6 @@ jobs:
           TRAIN="${INPUT_TRAIN_NAME:-$TRACKED_TRAIN}"
           HAILO="${INPUT_HAILO_DRIVER_VERSION:-$TRACKED_HAILO}"
           RUNNER="${INPUT_RUNNER}"
-          # Fail closed: an empty or omitted mark_latest must never publish
-          # straight to Latest, bypassing the hardware-test gate.
-          MARK_LATEST="${INPUT_MARK_LATEST:-false}"
 
           if [ -z "$RUNNER" ]; then
             if [ -n "$INPUT_ISO_URL" ]; then
@@ -137,7 +120,6 @@ jobs:
             echo "train_name=${TRAIN}"
             echo "runner=${RUNNER}"
             echo "iso_url=${INPUT_ISO_URL}"
-            echo "mark_latest=${MARK_LATEST}"
           } >> "$GITHUB_OUTPUT"
 
           echo "Resolved build parameters:"
@@ -146,7 +128,6 @@ jobs:
           echo "  train_name=${TRAIN}"
           echo "  runner=${RUNNER}"
           echo "  iso_url=${INPUT_ISO_URL:-(none)}"
-          echo "  mark_latest=${MARK_LATEST}"
 
   build:
     needs: resolve
@@ -868,9 +849,7 @@ jobs:
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
           RUNNER_IMAGE: ${{ needs.resolve.outputs.runner }}
           BUILD_SHA: ${{ github.sha }}
-          RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
-          SHORT_KVER: ${{ steps.kver.outputs.short_kver }}
         run: |
           # The body is regenerated on every dispatch — no template file checked
           # in. REAL_KVER comes from the kernel-detection step (exported via
@@ -880,7 +859,7 @@ jobs:
           # docker/main/install_hailort.sh to hailo.py when it began installing
           # HailoRT at first start) so the human gating "Set as latest"
           # can confirm the build matches what Frigate is actually shipping.
-          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER} ${SHORT_KVER}' > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO}' > release-notes.md <<'RELEASE_NOTES'
           ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
@@ -907,19 +886,20 @@ jobs:
           > directly from Hailo's servers during installation. Not included in this release.
 
           ### Install
+          The one line installer installs the newest build a hardware test approved for your TrueNAS train and running kernel. This build qualifies once its hardware-test issue is closed as completed.
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+          curl -fsSL https://raw.githubusercontent.com/${REPO}/main/get.sh | sudo bash
           ```
 
           ### Verify
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash -s -- --check
+          curl -fsSL https://raw.githubusercontent.com/${REPO}/main/get.sh | sudo bash -s -- --check
           sudo hailortcli fw-control identify
           ```
 
           ### Uninstall
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+          curl -fsSL https://raw.githubusercontent.com/${REPO}/main/get.sh | sudo bash -s -- --uninstall
           ```
 
           ### Checksums
@@ -980,36 +960,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish the draft (prerelease gate, or Latest on override)
+      - name: Publish the draft as a prerelease
         id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REL_ID: ${{ steps.release.outputs.id }}
-          MARK_LATEST: ${{ needs.resolve.outputs.mark_latest }}
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
         run: |
-          # A preview (BETA/RC) target always publishes as a prerelease, no
-          # matter what the dispatch says: k-tags carry no BETA marker, so the
-          # prerelease flag is the stable channel's primary lock against
-          # serving a beta build, and mark_latest must not be able to clear it.
+          # The hardware-test issue below is labelled by channel. k-tags carry
+          # no BETA marker, so this is the one place a build is classified.
           IS_PREVIEW=false
           case "$TRUENAS_VERSION" in
             *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
           esac
           echo "is_preview=${IS_PREVIEW}" >> "$GITHUB_OUTPUT"
-          # Unverified and preview builds publish as a PRERELEASE so GitHub
-          # keeps them out of /releases/latest (and thus install.sh) until a
-          # human promotes them; make_latest=false alone does not hold that
-          # gate.
-          if [ "$MARK_LATEST" = "true" ] && [ "$IS_PREVIEW" != "true" ]; then
-            PUBLISH_ARGS=(-F draft=false -f make_latest=true)
-          else
-            if [ "$MARK_LATEST" = "true" ]; then
-              echo "::warning title=preview build::mark_latest ignored for preview target ${TRUENAS_VERSION}; published as prerelease"
-            fi
-            PUBLISH_ARGS=(-F draft=false -F prerelease=true)
-          fi
+          # Every build publishes as a PRERELEASE with no verified-train
+          # marker, so no installer serves it until a hardware test on its
+          # train signs it off (promote.yml). There is deliberately no
+          # "publish straight to Latest" option: a full release with no
+          # marker counts as approved for every train (the grandfather rule
+          # for releases promoted before per-train sign-off), so it would
+          # reach every box untested. Preview builds stay prereleases for
+          # good; a stable build is promoted by its sign-off.
+          PUBLISH_ARGS=(-F draft=false -F prerelease=true)
           # Retry the publish PATCH: a transient API failure here would
           # otherwise strand an invisible draft with attached assets, no
           # hardware-test issue, and no surfaced error.
@@ -1033,9 +1007,8 @@ jobs:
           fi
 
       - name: Create hardware-test issue for auto-build
-        # A preview target forced to prerelease still needs its verification
-        # issue even when the dispatch said mark_latest=true.
-        if: needs.resolve.outputs.mark_latest == 'false' || steps.publish.outputs.is_preview == 'true'
+        # Every build gets one: nothing installs it until this issue is
+        # closed as completed.
         uses: actions/github-script@v9
         env:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
@@ -1057,16 +1030,16 @@ jobs:
             const releaseUrl = `${repoUrl}/releases/tag/${tag}`;
 
             // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
-            // channel. Those builds must NEVER be promoted to Latest (that would
-            // route stable installs to a beta via install.sh), so they get a
-            // distinct label that promote.yml ignores. Their hardware-test issue
-            // is a verification record only: closing it does not promote.
-            // Classified once, by the publish step; this step must agree with
-            // how the release was actually published.
+            // channel. Those builds must NEVER be promoted to Latest, so they
+            // get a distinct label: closing their issue as completed only
+            // approves the build for its train (promote.yml adds the
+            // verified-train marker), and it stays a pre-release. Classified
+            // once, by the publish step; this step must agree with how the
+            // release was actually published.
             const isPreview = process.env.IS_PREVIEW === 'true';
             const label = isPreview ? 'preview-hardware-test' : 'hardware-test';
             const labelDescription = isPreview
-              ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
+              ? 'Preview (TrueNAS beta) build verification; approves it for its train, never promoted to Latest'
               : 'Auto-build awaiting hardware verification';
             // Title: what to test | on what | which build. The tag goes last,
             // verbatim: the duplicate check below matches on it. The kernel
@@ -1110,7 +1083,7 @@ jobs:
             // A human follows this body by hand, so every command must work
             // as written: the downloads are this release's own assets, and
             // the flags are install.sh's (tests/test_issue_template.py checks
-            // both). A prerelease is never auto-selected, so the build is
+            // both). An unapproved build is never auto-selected, so it is
             // installed as a local hailo.raw, which makes install.sh require
             // the firmware version and expected sha explicitly.
             // Frigate installs HailoRT at first start and pins it here.
@@ -1135,16 +1108,16 @@ jobs:
             const logFileNote = `\`hailortcli\` may also print \`Cannot create log file hailort.log\`: harmless, the installer's own root run of hailortcli left a root-owned \`hailort.log\` in this directory.`;
 
             const intro = isPreview
-              ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently and is never promoted to Latest, so stable installs are unaffected.`
-              : `An auto-build published a new stable release that needs hardware verification before it is promoted. Until then it is a pre-release, so neither \`releases/latest\` nor the one line installer serves it.`;
+              ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. No system installs it until this test signs it off. It stays a pre-release permanently and is never promoted to Latest, so stable installs are unaffected.`
+              : `An auto-build published a new stable release that needs hardware verification before it is promoted. Until then it is a pre-release, so neither \`releases/latest\` nor the one line installer (\`get.sh\`) serves it.`;
 
             const signOff = isPreview
               ? [
-                  `- **Works:** close this issue as **completed**. That records the sign-off only: the release stays a pre-release and is never promoted to Latest.`,
-                  `- **Broken:** close it as **not planned**, and delete the release, since preview systems would otherwise keep installing it.`,
+                  `- **Works:** close this issue as **completed**. That approves [\`${tag}\`](${releaseUrl}) for this TrueNAS train, so the one line installer (\`get.sh\`) installs it on ${train} systems running kernel \`${kver}\`. The release stays a pre-release and is never promoted to Latest.`,
+                  `- **Broken:** close it as **not planned**. Nothing is approved, so no system installs it.`,
                 ]
               : [
-                  `- **Works:** close this issue as **completed**. That promotes [\`${tag}\`](${releaseUrl}) to a full release and appends the changelog. It becomes Latest only if it outranks the current Latest (a newer kernel, or a newer build of the same kernel).`,
+                  `- **Works:** close this issue as **completed**. That promotes [\`${tag}\`](${releaseUrl}) to a full release, appends the changelog and approves it for this TrueNAS train, so the one line installer (\`get.sh\`) installs it on ${train} systems running kernel \`${kver}\`. It becomes Latest only if it outranks the current Latest (a newer kernel, or a newer build of the same kernel).`,
                   `- **Broken:** close it as **not planned**, so nothing is promoted, and delete the release: an unpromoted build keeps counting as pending coverage for its kernel and holds back a rebuild.`,
                 ];
 

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'get.sh'
       - 'scripts/**.sh'
       - '.github/scripts/**.sh'
       - '.github/scripts/**.py'
@@ -12,6 +13,7 @@ on:
       - '.github/tracked-versions.json'
   pull_request:
     paths:
+      - 'get.sh'
       - 'scripts/**.sh'
       - '.github/scripts/**.sh'
       - '.github/scripts/**.py'
@@ -32,6 +34,7 @@ jobs:
       - name: Run shellcheck
         run: |
           shellcheck --severity=warning \
+            get.sh \
             scripts/*.sh \
             .github/scripts/*.sh
 
