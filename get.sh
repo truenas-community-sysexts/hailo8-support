@@ -1,34 +1,49 @@
 #!/usr/bin/env bash
-# Uninstall the Hailo-8 sysext. Thin alias for restore.sh, kept under this
-# name because users searching for "uninstall" won't grep for "restore".
-# restore.sh is still shipped in releases for backwards compatibility with
-# old install instructions.
+# Install the Hailo-8 sysext on TrueNAS from the newest build that a hardware
+# test approved for this box's TrueNAS train, built for its running kernel.
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/hailo8-support/main/get.sh | sudo bash -s -- --uninstall
-#        (get.sh runs the approved release's uninstall.sh beside its restore.sh)
-#    or: curl -fsSL <release-url>/uninstall.sh | sudo bash
-#    or: sudo ./uninstall.sh
+#   curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/hailo8-support/main/get.sh | sudo bash
+#
+# Arguments go after `bash -s --` and pass through to the installer:
+#
+#   ... | sudo bash -s -- --pool=fast         # any install.sh flag
+#   ... | sudo bash -s -- --check             # probe an existing install
+#   ... | sudo bash -s -- --release=TAG       # that release, no selection
+#   ... | sudo bash -s -- --uninstall         # remove it with the approved
+#                                             # release's uninstall.sh
+#
+# What it does:
+#   1. Reads the TrueNAS version (midclt call system.info) and derives the
+#      train: the major version from 26 on (every 26.x release, betas
+#      included, is train 26), major.minor before that (25.10). Reads the
+#      running kernel (uname -r).
+#   2. Lists this repo's releases and picks the newest build approved for
+#      that train and built for that exact kernel (and, since the sysext
+#      also ships userspace built against a train's base system, for that
+#      train). A hardware test on a train approves a build for that train
+#      only (promote.yml writes a verified-train marker into its notes); a
+#      full release with no marker predates per-train sign-off and counts
+#      for every train. Nothing else is ever installed, on stable or preview
+#      (beta) boxes: with no approved build for this kernel it stops and
+#      names the hardware test that is waiting.
+#   3. Downloads THAT release's install.sh, hailo.raw, hailo.raw.sha256 and
+#      firmware.sha256, verifies the image, and runs the release's own
+#      installer on it with the firmware version and sha the release pins.
+#      Every installer from r37 on takes a local image this way and then
+#      never looks up a release of its own, so what installs is exactly the
+#      approved build.
+#
+# --release=TAG skips steps 1 and 2 and uses TAG as given. --uninstall
+# fetches the release's uninstall.sh and restore.sh instead; it, --check,
+# --help and an image path of your own need only the release's scripts, so
+# on a kernel with no approved build they use the newest release approved
+# for the train. --repo=OWNER/NAME (or HAILO_REPO) points all of it at a
+# fork.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# When piped through `curl | sudo bash`, $0 is /dev/stdin and there is no
-# sibling restore.sh on disk. Detect that case and fetch restore.sh from the
-# release approved for this box's TrueNAS train. Otherwise (checked-out tree,
-# extracted release, or get.sh), exec the sibling directly.
-if [ -f "${SCRIPT_DIR}/restore.sh" ]; then
-    exec bash "${SCRIPT_DIR}/restore.sh" "$@"
-fi
-
-# Fallback: stdin path. HAILO_REPO is honored to match install.sh's --repo=
-# override.
 REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
-# Repo moved from scyto/truenas-hailo; redirect stale env-var/docs to the new slug.
-if [ "$REPO" = "scyto/truenas-hailo" ]; then
-    echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'." >&2
-    REPO="truenas-community-sysexts/hailo8-support"
-fi
+WORK_DIR=""
 
 # BEGIN approved-release (a verbatim copy lives in get.sh, scripts/install.sh
 # and scripts/uninstall.sh, each a self-contained curl|bash script;
@@ -314,21 +329,95 @@ approved_release_tag() {
 }
 # END approved-release
 
-# restore.sh from the release a hardware test approved for this train (the
-# build for this kernel when there is one), never GitHub's Latest. It is
-# self-contained: it sources no sibling files.
-TAG=$(approved_release_tag scripts) || exit 1
-BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
-echo "uninstall.sh: fetching restore.sh from ${REPO} release ${TAG}..." >&2
-WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hailo-uninstall.XXXXXXXXXX")
-trap 'rm -rf "$WORK_DIR"' EXIT
-if ! curl -fsSL --max-time 60 "${BASE_URL}/restore.sh" -o "${WORK_DIR}/restore.sh"; then
-    echo "ERROR: failed to download restore.sh from ${REPO} release ${TAG}" >&2
-    exit 1
-fi
-if [ ! -s "${WORK_DIR}/restore.sh" ]; then
-    echo "ERROR: downloaded restore.sh is empty (${REPO} release ${TAG})" >&2
-    exit 1
-fi
-bash "${WORK_DIR}/restore.sh" "$@"
-exit $?
+# Download release assets $2... of release $1 into WORK_DIR.
+fetch_assets() {
+    local tag="$1" asset
+    shift
+    for asset in "$@"; do
+        curl -fsSL --retry 3 --max-time 600 -o "${WORK_DIR}/${asset}" \
+            "https://github.com/${REPO}/releases/download/${tag}/${asset}" \
+            || { echo "ERROR: could not download ${asset} from release ${tag}" >&2; return 1; }
+    done
+}
+
+main() {
+    local mode=install purpose=install tag="" arg fw_version fw_sha
+    local -a args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --uninstall) mode=uninstall ;;
+            --release=*)
+                tag="${arg#*=}"
+                [ -n "$tag" ] || { echo "ERROR: --release= needs a tag, e.g. --release=k6.18.42-hailo4.21.0-r47" >&2; exit 2; }
+                ;;
+            --repo=*)
+                REPO="${arg#*=}"
+                [ -n "$REPO" ] || { echo "ERROR: --repo= needs OWNER/NAME" >&2; exit 2; }
+                ;;
+            *) args+=("$arg") ;;
+        esac
+    done
+    # Repo moved from scyto/truenas-hailo; redirect stale env-var/docs to the new slug.
+    if [ "$REPO" = "scyto/truenas-hailo" ]; then
+        echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'." >&2
+        REPO="truenas-community-sysexts/hailo8-support"
+    fi
+    # The scripts below read the repo from the environment: install.sh's
+    # --repo default and uninstall.sh's only override.
+    export HAILO_REPO="$REPO"
+
+    # Only an install needs the release's image. Uninstall, --check, --help
+    # and a path to the user's own image run the release's scripts only.
+    [ "$mode" = uninstall ] && purpose=scripts
+    for arg in ${args[@]+"${args[@]}"}; do
+        case "$arg" in --check|--help|[!-]*) purpose=scripts ;; esac
+    done
+
+    if [ -n "$tag" ]; then
+        echo "Release ${tag} (pinned with --release)" >&2
+    else
+        tag=$(approved_release_tag "$purpose") || exit 1
+    fi
+
+    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hailo-get.XXXXXX")
+    trap 'rm -rf "$WORK_DIR"' EXIT
+
+    if [ "$mode" = uninstall ]; then
+        # uninstall.sh runs the restore.sh beside it; both come from the
+        # release. They take no release argument: they only undo the install.
+        fetch_assets "$tag" uninstall.sh restore.sh || exit 1
+        bash "${WORK_DIR}/uninstall.sh" ${args[@]+"${args[@]}"}
+        return
+    fi
+
+    fetch_assets "$tag" install.sh || exit 1
+    if [ "$purpose" = install ]; then
+        # The release's own image, checked the way install.sh checks a
+        # download, goes to its installer as a local file. A local image
+        # needs the firmware version (from the tag, as install.sh derives
+        # it) and the expected firmware sha (the release's firmware.sha256).
+        fetch_assets "$tag" hailo.raw hailo.raw.sha256 firmware.sha256 || exit 1
+        [ -s "${WORK_DIR}/hailo.raw" ] || { echo "ERROR: hailo.raw from release ${tag} is empty" >&2; exit 1; }
+        echo "Verifying checksum..." >&2
+        (cd "$WORK_DIR" && sha256sum -c hailo.raw.sha256) >&2 \
+            || { echo "ERROR: checksum verification failed for hailo.raw from release ${tag}" >&2; exit 1; }
+        fw_version=$(printf '%s' "$tag" | sed -n 's/.*hailo\([0-9][0-9.]*\).*/\1/p')
+        fw_version="${fw_version%.}"
+        if ! printf '%s' "$fw_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: could not read the HailoRT version from release tag '${tag}'" >&2
+            exit 1
+        fi
+        fw_sha=$(tr -d '[:space:]' < "${WORK_DIR}/firmware.sha256")
+        if ! printf '%s' "$fw_sha" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "ERROR: firmware.sha256 from release ${tag} is not a 64-char hex sha256" >&2
+            exit 1
+        fi
+        args=("${WORK_DIR}/hailo.raw" "--firmware-version=${fw_version}" \
+              "--expected-firmware-sha=${fw_sha}" ${args[@]+"${args[@]}"})
+    fi
+    bash "${WORK_DIR}/install.sh" ${args[@]+"${args[@]}"}
+}
+
+# Called on the last line, so bash has read this whole script before
+# anything runs and the installer cannot swallow the rest of it from stdin.
+main "$@"
