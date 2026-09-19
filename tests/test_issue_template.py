@@ -171,19 +171,37 @@ class Commands(unittest.TestCase):
         self.assertIn("Kernel version mismatch",
                       (ROOT / "scripts" / "hailo-preinit.sh").read_text())
 
-    def test_install_step_explains_same_kernel_insmod_warning(self):
-        # Reinstalling on the running kernel with hailo_pci loaded: insmod
-        # refuses it (File exists) and install.sh warns, harmlessly. The
-        # WARNING line quoted must be what install.sh prints.
+    def test_install_step_explains_same_kernel_insmod_skip(self):
+        # Reinstalling on the running kernel with hailo_pci loaded: install.sh
+        # skips insmod (which would fail with File exists) and says the new
+        # module loads at the next reboot. The line quoted must be what
+        # install.sh prints, and the old insmod noise must be gone.
         text = INSTALL_SH.read_text()
         for params in (STABLE, PREVIEW):
             body = render_issue(**params)["body"]
             step2 = body[body.index("### 2. Install this build"):body.index("### 3. Verify")]
             self.assertIn("Reinstalling on the same kernel while `hailo_pci` is loaded", step2)
-            self.assertIn("could not insert module ...: File exists", step2)
             self.assertIn("this build's module loads at the reboot in step 4", step2)
-            quoted = re.findall(r"`(WARNING: [^`]+)`", step2)
+            self.assertIn("If the earlier build had a different HailoRT version", step2)
+            self.assertNotIn("File exists", step2)
+            self.assertNotIn("WARNING: insmod", step2)
+            quoted = re.findall(r"`(hailo_pci already loaded[^`]*)`", step2)
             self.assertEqual(len(quoted), 1, step2)
+            for q in quoted:
+                self.assertIn(q, text)
+
+    def test_verify_step_explains_boot_pool_leftover(self):
+        # An upgrade from the boot-pool-copy flow leaves the old copy under
+        # /usr, which --check lists as informational. The line quoted must be
+        # what install.sh prints.
+        text = INSTALL_SH.read_text()
+        for params in (STABLE, PREVIEW):
+            body = render_issue(**params)["body"]
+            step3 = body[body.index("### 3. Verify"):body.index("### 4. Reboot and re-verify")]
+            self.assertIn("Upgrading from a release that copied the image to the boot pool", step3)
+            self.assertIn("neither a warning nor a failure", step3)
+            quoted = re.findall(r"`(Unused boot-pool copy [^`]+)`", step3)
+            self.assertEqual(len(quoted), 1, step3)
             for q in quoted:
                 self.assertIn(q, text)
 

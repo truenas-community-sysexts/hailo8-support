@@ -61,7 +61,7 @@ curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/
 5. **Injects firmware** into the sysext squashfs (unpacks, adds firmware, repacks)
 6. **Installs the sysext** to `/mnt/<pool>/.config/hailo/hailo.raw` on a data pool
 7. **Activates the sysext** in place via TrueNAS's symlink + refresh pattern
-8. **Loads the kernel module** via `insmod`
+8. **Loads the kernel module** via `insmod` (skipped when `hailo_pci` is already loaded, as on a reinstall: the new module loads at the next reboot)
 9. **Sets up persistence** (see below)
 
 ## Persistence

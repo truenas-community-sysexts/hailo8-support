@@ -1125,6 +1125,9 @@ jobs:
             // boot's PREINIT mismatch error in this boot's journal until the
             // step 4 reboot.
             const upgradeNote = `Upgrading over an earlier build for a different kernel (for example after a TrueNAS update): \`--check\` here also shows 1 fail, \`PREINIT logged an error this boot\` with a \`Kernel version mismatch\` message. That entry was written by the boot before this install and clears after the reboot in step 4, where 0 fail is required.`;
+            // A box upgraded from the boot-pool-copy install flow keeps the old
+            // copy until the next TrueNAS update; --check lists it as info.
+            const legacyCopyNote = `Upgrading from a release that copied the image to the boot pool: \`--check\` here and in step 4 also lists \`Unused boot-pool copy /usr/share/truenas/sysext-extensions/hailo.raw left by an older install (informational)\`. It is neither a warning nor a failure: nothing reads that file, and the next TrueNAS update removes it.`;
             const logFileNote = `\`hailortcli\` may also print \`Cannot create log file hailort.log\`: harmless, the installer's own root run of hailortcli left a root-owned \`hailort.log\` in this directory.`;
 
             const intro = isPreview
@@ -1179,13 +1182,15 @@ jobs:
                 "```",
                 `This installs with in-place activation: the image (with the firmware injected) is written to \`/mnt/<pool>/.config/hailo/hailo.raw\` on a data pool and \`/run/extensions/hailo.raw\` links straight to it. Nothing is copied to the boot pool. If the installer asks which pool to use, pick one (or add \`--pool=NAME\`).`,
                 ``,
-                `Reinstalling on the same kernel while \`hailo_pci\` is loaded (for example over an earlier build for this kernel): the installer also prints \`insmod: ERROR: could not insert module ...: File exists\` followed by \`WARNING: insmod hailo_pci failed (device may not be present)\`. That is harmless: the module already loaded stays in use, and this build's module loads at the reboot in step 4.`,
+                `Reinstalling on the same kernel while \`hailo_pci\` is loaded (for example over an earlier build for this kernel): the installer prints \`hailo_pci already loaded, skipping insmod: this build's module loads at the next reboot\`. That is expected: the module already loaded stays in use, and this build's module loads at the reboot in step 4. If the earlier build had a different HailoRT version, its module and firmware stay active until then, so the \`hailortcli\` check in step 3 can fail or show the old firmware version; judge it after the reboot.`,
                 ``,
                 `### 3. Verify`,
                 "```bash",
                 ...checks,
                 "```",
                 upgradeNote,
+                ``,
+                legacyCopyNote,
                 ``,
                 `Before the first reboot, \`--check\` may warn "No hailo-preinit entries this boot": the PREINIT script has not run yet. Any other warning or failure is a finding.`,
                 ``,
