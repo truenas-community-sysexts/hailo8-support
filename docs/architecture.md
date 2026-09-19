@@ -36,7 +36,7 @@ This means we can skip scale-build entirely, reducing build time from ~5-6 hours
 
 The runner image is resolved per-build so it stays compatible with whatever Debian release TrueNAS is on (the runner's GLIBC must be <= the TrueNAS rootfs's). For example, Debian Bookworm (GLIBC 2.36) maps to **ubuntu-22.04** (GLIBC 2.35); Ubuntu 24.04 (GLIBC 2.39) would produce binaries that won't run on a Bookworm-based rootfs. The current mapping table lives in [`.github/scripts/resolve-runner.sh`](../.github/scripts/resolve-runner.sh).
 
-The kernel module is compiled with **gcc-12** because the TrueNAS kernel was built with GCC 12, which uses `-ftrivial-auto-var-init=zero` — a flag not supported by GCC 11 (ubuntu-22.04's default). The userspace components (hailortcli, libhailort) are built with the default GCC 11, which is fine for GLIBC compatibility.
+The kernel module is compiled with **gcc-12** because the TrueNAS kernel was built with GCC 12, which uses `-ftrivial-auto-var-init=zero` - a flag not supported by GCC 11 (ubuntu-22.04's default). The userspace components (hailortcli, libhailort) are built with the default GCC 11, which is fine for GLIBC compatibility.
 
 #### Build runner resolution
 
@@ -46,7 +46,7 @@ Both auto-bump check workflows resolve the runner before dispatching `build.yml`
 2. `raw.githubusercontent.com/truenas/truenas-build/<sha>/conf/build.manifest` declares `debian_release:` (e.g. `"bookworm"`).
 3. A `case` statement in `.github/scripts/resolve-runner.sh` maps the Debian release to an Ubuntu runner image with a compatible GLIBC.
 
-When TrueNAS rebases onto a new Debian release, the auto-bump checks fail loud (`::error::unknown debian_release '<codename>'`) on the first scheduled run after the rebase. The fix is a one-line addition to the `case` statement — detection is automated, the actual mapping decision stays human.
+When TrueNAS rebases onto a new Debian release, the auto-bump checks fail loud (`::error::unknown debian_release '<codename>'`) on the first scheduled run after the rebase. The fix is a one-line addition to the `case` statement - detection is automated, the actual mapping decision stays human.
 
 ### Caching Strategy
 
@@ -98,7 +98,7 @@ cd hailort-drivers/linux/pcie
 make CC=gcc-12 KERNEL_DIR=/path/to/linux-headers-<KVER> all
 ```
 
-This produces `hailo_pci.ko`. The `CC=gcc-12` is critical — without it, GCC 11 fails on the `-ftrivial-auto-var-init=zero` flag baked into the kernel's build config.
+This produces `hailo_pci.ko`. The `CC=gcc-12` is critical - without it, GCC 11 fails on the `-ftrivial-auto-var-init=zero` flag baked into the kernel's build config.
 
 ### Step Detail: HailoRT Build
 
@@ -164,31 +164,35 @@ ExecStart=/bin/bash -c '[ -e /sys/module/hailo_pci ] || /sbin/insmod /usr/lib/mo
 
 This is necessary because `/lib/modules/` is on a read-only ZFS dataset on TrueNAS. `depmod` cannot write module dependency files, so `modprobe` cannot find the module. `insmod` bypasses module dependency resolution entirely, loading the `.ko` directly by path.
 
-The `[ -e /sys/module/hailo_pci ]` guard makes the unit idempotent: the PREINIT script normally loads the module before `multi-user.target`, so by the time this service runs the module is already in the kernel and the insmod is skipped. The unit still acts as a backup if PREINIT registration is broken (e.g., midclt failed during install) — and a real insmod failure (version mismatch, missing device) is still surfaced rather than swallowed by `ExecStart=-`.
+The `[ -e /sys/module/hailo_pci ]` guard makes the unit idempotent: the PREINIT script normally loads the module before `multi-user.target`, so by the time this service runs the module is already in the kernel and the insmod is skipped. The unit still acts as a backup if PREINIT registration is broken (e.g., midclt failed during install) - and a real insmod failure (version mismatch, missing device) is still surfaced rather than swallowed by `ExecStart=-`.
 
 ## TrueNAS Sysext Activation
 
-TrueNAS does **not** use the standard `systemd-sysext merge` path (`/var/lib/extensions/`). Instead, the TrueNAS middleware uses a symlink pattern:
+TrueNAS does **not** use the standard `systemd-sysext merge` path (`/var/lib/extensions/`). Instead, activation uses a symlink in `/run/extensions/` that points at the image on the data pool:
 
 ```
-/usr/share/truenas/sysext-extensions/hailo.raw  ← the actual file
+/mnt/<pool>/.config/hailo/hailo.raw  ← the actual file (data pool, persistent)
            ↓ symlink
-/run/extensions/hailo.raw                       ← where systemd-sysext looks
+/run/extensions/hailo.raw            ← where systemd-sysext looks (tmpfs)
            ↓ systemd-sysext refresh
-/usr/ overlayfs merge                           ← files appear in /usr/
+/usr/ overlayfs merge                ← files appear in /usr/
 ```
+
+`systemd-sysext` loop-mounts whatever the symlink resolves to. `loop_device_make_by_path()` is filesystem-agnostic, so the image can live on the ZFS data pool just as well as on the boot pool, and there is no need to copy it under `/usr/` first. Keeping the only copy on the data pool also means it already survives a TrueNAS update (which reclones `/usr` from scratch).
 
 The activation sequence:
 
-1. Place `hailo.raw` at `/usr/share/truenas/sysext-extensions/hailo.raw`
-2. Create symlink: `ln -sf /usr/share/truenas/sysext-extensions/hailo.raw /run/extensions/hailo.raw`
-3. `systemd-sysext refresh` — merges the sysext via overlayfs
-4. `ldconfig` — updates shared library cache
+1. Image already on the data pool at `/mnt/<pool>/.config/hailo/hailo.raw`
+2. Create symlink: `ln -sf /mnt/<pool>/.config/hailo/hailo.raw /run/extensions/hailo.raw`
+3. `systemd-sysext refresh` - merges the sysext via overlayfs
+4. `ldconfig` - updates shared library cache
 
 The deactivation sequence:
 
 1. `rm -f /run/extensions/hailo.raw`
-2. `systemd-sysext refresh` — unmerges
+2. `systemd-sysext refresh` - unmerges
+
+Because nothing is written under `/usr/`, neither activation nor deactivation toggles the `/usr` ZFS `readonly` property.
 
 **Note:** Raw `systemd-sysext merge` does not work on TrueNAS because `/var/lib/extensions/` does not exist.
 
@@ -231,15 +235,15 @@ The PREINIT script does **not** download firmware from the network. The backed-u
 
 ## Persistence Mechanism
 
-TrueNAS updates replace the rootfs, wiping any sysext placed in `/usr/`. The persistence mechanism has two layers:
+TrueNAS updates replace the rootfs, wiping anything placed in `/usr/`. The persistence mechanism has two layers:
 
 ### Layer 1: Persistent Storage
 
-Config stored on a ZFS data pool (survives OS updates):
+The sysext image and its config live on a ZFS data pool (survives OS updates):
 
 ```text
 /mnt/<pool>/.config/hailo/
-├── hailo.raw                ← Backup of the sysext (includes firmware)
+├── hailo.raw                ← The sysext image itself (includes firmware), activated in place
 ├── .hailo-driver-version    ← HailoRT version (informational)
 └── hailo-preinit.sh         ← The PREINIT script itself
 ```
@@ -252,26 +256,24 @@ Why PREINIT and not POSTINIT:
 
 - PREINIT runs after ZFS pools are mounted but before the middleware starts apps
 - POSTINIT runs after the middleware is up, by which time app containers may already be starting
-- The script only uses `zfs`, `cp`, `systemd-sysext`, and `insmod` — all available at PREINIT time
-- The timeout is set to 30 seconds (default is 10, which is too tight for the copy + sysext refresh)
+- The script only uses `systemd-sysext`, `ln`, and `insmod` - all available at PREINIT time
+- The timeout is set to 30 seconds (default is 10, which is too tight for the sysext refresh)
 
 The script:
 
-1. Finds backup at `/mnt/<pool>/.config/hailo/hailo.raw` (scans `/mnt/*/.config/hailo/`)
-2. Compares SHA256 checksum with installed sysext
-3. If different (TrueNAS updated) or missing: copies from backup to `/usr/` (temporarily unlocks ZFS readonly)
-4. **Always** activates sysext via symlink + refresh (the `/run/extensions/` symlink is on tmpfs and gone after every reboot)
-5. Loads kernel module via `insmod`
+1. Finds the image at `/mnt/<pool>/.config/hailo/hailo.raw` (scans `/mnt/*/.config/hailo/`)
+2. Symlinks `/run/extensions/hailo.raw` at it and runs `systemd-sysext refresh` (the `/run/extensions/` symlink is on tmpfs and gone after every reboot)
+3. Loads kernel module via `insmod`
 
-The script is idempotent — on a normal reboot where checksums match, it skips the copy but still activates the sysext and loads the module.
+There is no copy step or ZFS `readonly` toggle: the image is activated in place on the data pool, so the same path works on a normal reboot and after a TrueNAS update. The script is idempotent - re-running it just re-points the symlink and refreshes.
 
 ### Pool Selection
 
 The install script selects a persistent storage pool in this order:
 
-1. `--persist-path=PATH` — exact path (highest priority)
-2. `--pool=NAME` — specific pool name → `/mnt/<NAME>/.config/hailo`
-3. **Auto-detect** — first ZFS pool that isn't `boot-pool` → `/mnt/<pool>/.config/hailo`
+1. `--persist-path=PATH` - exact path (highest priority)
+2. `--pool=NAME` - specific pool name → `/mnt/<NAME>/.config/hailo`
+3. **Auto-detect** - first ZFS pool that isn't `boot-pool` → `/mnt/<pool>/.config/hailo`
 
 ## Read-Only Filesystem Constraints
 
@@ -290,7 +292,7 @@ This is why:
 
 - Firmware goes inside the sysext (merged into `/usr/lib/firmware/` via overlayfs)
 - `insmod` is used instead of `modprobe` (can't run `depmod` on read-only `/lib/modules`)
-- The install script temporarily unlocks `/usr` to place `hailo.raw`
+- `hailo.raw` is kept on the writable data pool and activated in place, so `/usr` never has to be unlocked
 
 ## Automated Version Monitoring
 
@@ -312,4 +314,4 @@ Enumerates tags reachable from `hailort-drivers`'s `hailo8` branch (not `master`
 
 ### Consolidated commit and dispatch
 
-If anything moved, the workflow writes the state file in one commit, runs `sync-build-defaults.sh` to keep `build.yml`'s `workflow_dispatch` defaults aligned, and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge — a human verifies the build on Hailo-8 hardware and promotes it via the GitHub UI.
+If anything moved, the workflow writes the state file in one commit and dispatches a single build with `mark_latest='false'`. `build.yml`'s `workflow_dispatch` defaults are blank and resolved at runtime from `tracked-versions.json`, so no defaults-sync step is needed. Auto-builds publish releases without the "Latest" badge - a human verifies the build on Hailo-8 hardware and promotes it via the GitHub UI.

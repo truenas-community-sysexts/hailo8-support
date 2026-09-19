@@ -6,12 +6,12 @@ After TrueNAS updates the underlying kernel, the boot-time PREINIT script
 logs the following and `/dev/hailo0` will not initialize:
 
 ```
-[hailo-preinit] ERROR: Kernel version mismatch — running <new-kver> but sysext has module for <old-kver>
+[hailo-preinit] ERROR: Kernel version mismatch - running <new-kver> but sysext has module for <old-kver>
 [hailo-preinit] ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching <new-kver>
 [hailo-preinit] ERROR: Visit https://github.com/<repo>/releases
 ```
 
-This is **expected** behavior on a TrueNAS upgrade — not a bug. The Hailo
+This is **expected** behavior on a TrueNAS upgrade - not a bug. The Hailo
 kernel module is compiled against an exact kernel version, so the previous
 sysext is no longer compatible.
 
@@ -25,9 +25,10 @@ sysext is no longer compatible.
 
 2. Visit the releases page printed in the error message.
 
-3. Find the release whose tag matches your TrueNAS version
-   (`v<truenas>-hailo<driver>`). The release notes record the kernel
-   version it was built against.
+3. Find the release whose tag matches your running kernel
+   (`k<kernel>-hailo<driver>-r<run>`, e.g. `k6.12.91-...` for kernel
+   `6.12.91-production+truenas`). Older releases use `v<truenas>-...` tags;
+   either way the release notes record the exact kernel the build targets.
 
 4. If a matching release exists, re-run the installer:
 
@@ -39,10 +40,10 @@ sysext is no longer compatible.
    The installer downloads the matching `hailo.raw` and replaces the
    stale sysext on the persistent pool. The next boot succeeds.
 
-5. If no matching release exists yet, the daily auto-build workflow on
-   this fork picks up new TrueNAS versions within ~24 hours of the ISO
-   being published at `download.truenas.com`. Wait for the build to
-   land, then repeat step 4. If a build is overdue, open an issue.
+5. If no matching release exists yet, the daily auto-build workflow
+   picks up new TrueNAS versions within ~24 hours of the ISO being
+   published at `download.truenas.com`. Wait for the build to land,
+   then repeat step 4. If a build is overdue, open an issue.
 
 ### Why this can't be fixed automatically
 

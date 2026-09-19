@@ -21,25 +21,25 @@ fi
 
 # Fallback: stdin path. Resolve the matching restore.sh from the latest
 # release of the fork that shipped this script. HAILO_REPO is honored to
-# match install.sh's --repo= override.
+# match install.sh's --repo= override. restore.sh is self-contained (it
+# sources no sibling files), so whichever release is Latest can run it.
 REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
 # Repo moved from scyto/truenas-hailo; redirect stale env-var/docs to the new slug.
 if [ "$REPO" = "scyto/truenas-hailo" ]; then
     echo "Note: 'scyto/truenas-hailo' has moved; using 'truenas-community-sysexts/hailo8-support'." >&2
     REPO="truenas-community-sysexts/hailo8-support"
 fi
+BASE_URL="https://github.com/${REPO}/releases/latest/download"
 echo "uninstall.sh: fetching restore.sh from ${REPO}/releases/latest..." >&2
-TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
-if ! curl -fsSL --max-time 60 \
-        "https://github.com/${REPO}/releases/latest/download/restore.sh" \
-        -o "$TMP"; then
+TMPDIR=$(mktemp -d /tmp/hailo-uninstall.XXXXXXXXXX)
+trap 'rm -rf "$TMPDIR"' EXIT
+if ! curl -fsSL --max-time 60 "${BASE_URL}/restore.sh" -o "${TMPDIR}/restore.sh"; then
     echo "ERROR: failed to download restore.sh from ${REPO}/releases/latest" >&2
     exit 1
 fi
-if [ ! -s "$TMP" ]; then
+if [ ! -s "${TMPDIR}/restore.sh" ]; then
     echo "ERROR: downloaded restore.sh is empty (${REPO}/releases/latest)" >&2
     exit 1
 fi
-bash "$TMP" "$@"
+bash "${TMPDIR}/restore.sh" "$@"
 exit $?

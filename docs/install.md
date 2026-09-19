@@ -1,27 +1,30 @@
 # Install Reference
 
+> **Runs as root.** `install.sh` performs privileged operations (writes to a data pool, manages sysexts via `systemd-sysext`, calls `midclt`, loads kernel modules), so it must run as root. Use `sudo` as shown in every example below. `--check` and `--dry-run` also require root; only `--help` runs without it.
+
 ## Installing a Specific Version
 
-Release tags encode both versions: `v<truenas>-hailo<driver>` (e.g., `v25.10.2.1-hailo4.21.0`).
+Release tags encode the kernel the build targets: `k<kernel>-hailo<driver>-r<run>` (e.g., `k6.12.91-hailo4.21.0-r41`). Releases published before the kernel-keyed migration keep their older `v<truenas>-hailo<driver>` tags (e.g., `v25.10.2.1-hailo4.21.0`); both install the same way. The README supported versions table maps TrueNAS versions to the release serving them.
 
 To install from a specific release:
 
 ```bash
 # Download install.sh from a specific release tag
-curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/v25.10.2.1-hailo4.21.0/install.sh | sudo bash
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/k6.12.91-hailo4.21.0-r41/install.sh | sudo bash
 ```
 
 Or download `hailo.raw` manually and install it:
 
 ```bash
 # Download hailo.raw from a specific release
-curl -fSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/v25.10.2.1-hailo4.21.0/hailo.raw -o /tmp/hailo.raw
+curl -fSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/k6.12.91-hailo4.21.0-r41/hailo.raw -o /tmp/hailo.raw
 sudo bash install.sh /tmp/hailo.raw
 ```
 
-> **Warning:** Using a `hailo.raw` built for a different TrueNAS version will fail to load
-> the kernel module. The module is compiled against exact kernel headers — a version mismatch
-> means `insmod` will refuse to load it. Always use the release matching your TrueNAS version.
+> **Warning:** Using a `hailo.raw` built for a different kernel will fail to load
+> the kernel module. The module is compiled against exact kernel headers - a kernel mismatch
+> means `insmod` will refuse to load it. Always use the release matching your running kernel
+> (`uname -r`); the installer checks this before touching the system.
 
 ## Install Options
 
@@ -29,7 +32,7 @@ sudo bash install.sh /tmp/hailo.raw
 | --- | --- |
 | `--repo=OWNER/NAME` | GitHub repo for releases (default: `truenas-community-sysexts/hailo8-support`). Also settable via `HAILO_REPO` env var. |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
-| `--persist-path=PATH` | Exact path for persistent config directory |
+| `--persist-path=PATH` | Persistent config directory. Must be `/mnt/<pool>/.config/hailo` (the exact location the boot-time PREINIT script scans). Prefer `--pool`, which builds this path for you. |
 | `--check` | Probe an existing install (read-only) and report status |
 | `--dry-run` | Validate everything (downloads, checksums, network) without modifying the system |
 | `--help` | Show usage help |
@@ -54,10 +57,10 @@ curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/
 1. **Downloads `hailo.raw`** from the GitHub release matching your TrueNAS version (or uses a local file)
 2. **Verifies the checksum** (SHA256)
 3. **Downloads Hailo-8 firmware** directly from Hailo's S3 servers (not redistributed by this project)
-4. **Verifies firmware SHA256** against the hash published in `.github/tracked-versions.json`
+4. **Verifies firmware SHA256** against the hash published as the release's `firmware.sha256` asset
 5. **Injects firmware** into the sysext squashfs (unpacks, adds firmware, repacks)
-6. **Installs the sysext** to `/usr/share/truenas/sysext-extensions/hailo.raw`
-7. **Activates the sysext** via TrueNAS's symlink + refresh pattern
+6. **Installs the sysext** to `/mnt/<pool>/.config/hailo/hailo.raw` on a data pool
+7. **Activates the sysext** in place via TrueNAS's symlink + refresh pattern
 8. **Loads the kernel module** via `insmod`
 9. **Sets up persistence** (see below)
 
@@ -67,16 +70,16 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 
 ### Recovery Process
 
-1. **Backup**: The sysext (with firmware already injected) is copied to a persistent ZFS pool
+1. **Image on the data pool**: The sysext (with firmware already injected) is written to a persistent ZFS pool, and that is the copy `/run/extensions/` activates
 2. **PREINIT script**: Registered with TrueNAS middleware, runs on every boot before apps start
-3. On boot, the script compares checksums — if the installed sysext differs from the backup (indicating a TrueNAS update) or is missing, it reinstalls from the backup
-4. No network access is needed at boot — firmware is already inside the backed-up sysext
+3. On boot, the script re-points `/run/extensions/hailo.raw` at the data-pool image and runs `systemd-sysext refresh`. Because the image lives on the data pool (not `/usr`), a TrueNAS update cannot wipe it, so the same path works on every boot
+4. No network access is needed at boot - firmware is already inside the sysext image
 
 ### Persistent Storage Layout
 
 ```text
 /mnt/<pool>/.config/hailo/
-├── hailo.raw                ← Sysext backup (includes firmware)
+├── hailo.raw                ← Sysext image (includes firmware), activated in place
 ├── .hailo-driver-version    ← HailoRT version (informational)
 ├── .hailo-repo              ← Source GitHub repo (used by preinit for error messages)
 └── hailo-preinit.sh         ← Boot script (extracted from hailo.raw, registered as PREINIT)
@@ -86,9 +89,9 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 
 The install script selects a pool in this order:
 
-1. `--persist-path=PATH` — use this exact path (highest priority)
-2. `--pool=NAME` — use `/mnt/<NAME>/.config/hailo`
-3. **Auto-detect** — first ZFS pool that isn't `boot-pool`
+1. `--persist-path=PATH` - use this exact path (highest priority)
+2. `--pool=NAME` - use `/mnt/<NAME>/.config/hailo`
+3. **Auto-detect** - first ZFS pool that isn't `boot-pool`
 
 The PREINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`, so it works even if the pool name changes.
 
@@ -103,6 +106,6 @@ If you want tighter permissions, edit the rule in the sysext to use `GROUP="vide
 | Script | Purpose |
 | --- | --- |
 | `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
-| `scripts/uninstall.sh` | Discoverable alias — downloads and runs `restore.sh` |
+| `scripts/uninstall.sh` | Discoverable alias - downloads and runs `restore.sh` |
 | `scripts/restore.sh` | Uninstalls sysext, deregisters init script, cleans up persistent storage |
-| `scripts/hailo-preinit.sh` | Boot-time script — activates sysext before apps start (bundled inside hailo.raw at `/usr/lib/hailo/`) |
+| `scripts/hailo-preinit.sh` | Boot-time script - activates sysext before apps start (bundled inside hailo.raw at `/usr/lib/hailo/`) |
