@@ -1121,6 +1121,11 @@ jobs:
               'readlink /run/extensions/hailo.raw      # expect /mnt/<pool>/.config/hailo/hailo.raw',
               "sudo dmesg | grep -iE 'find_vma|rwsem'  # expect no output (mmap-lock patch)",
             ];
+            // An upgrade over a build for another kernel leaves the previous
+            // boot's PREINIT mismatch error in this boot's journal until the
+            // step 4 reboot.
+            const upgradeNote = `Upgrading over an earlier build for a different kernel (for example after a TrueNAS update): \`--check\` here also shows 1 fail, \`PREINIT logged an error this boot\` with a \`Kernel version mismatch\` message. That entry was written by the boot before this install and clears after the reboot in step 4, where 0 fail is required.`;
+            const logFileNote = `\`hailortcli\` may also print \`Cannot create log file hailort.log\`: harmless, the installer's own root run of hailortcli left a root-owned \`hailort.log\` in this directory.`;
 
             const intro = isPreview
               ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently and is never promoted to Latest, so stable installs are unaffected.`
@@ -1178,7 +1183,11 @@ jobs:
                 "```bash",
                 ...checks,
                 "```",
+                upgradeNote,
+                ``,
                 `Before the first reboot, \`--check\` may warn "No hailo-preinit entries this boot": the PREINIT script has not run yet. Any other warning or failure is a finding.`,
+                ``,
+                logFileNote,
                 ``,
                 `### 4. Reboot and re-verify`,
                 "```bash",
@@ -1190,6 +1199,8 @@ jobs:
                 'sudo journalctl -b -t hailo-preinit --no-pager -o cat   # expect "Done" as the last line, and no line starting with "ERROR:"',
                 "```",
                 `\`--check\` should now also report "PREINIT completed successfully this boot".`,
+                ``,
+                logFileNote,
                 ``,
                 `### 5. Report and sign off`,
                 `Start Frigate again:`,
