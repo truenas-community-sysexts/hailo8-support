@@ -16,7 +16,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from release_fixtures import release
+from release_fixtures import marker, release
 from test_gen_supported_versions import gsv
 from test_kernel_coverage import run_coverage
 from test_promote_ranking import ranking_snippet
@@ -130,6 +130,53 @@ class PromoteRanking(unittest.TestCase):
         stable = rendered_release("k6.12.91-hailo4.21.0-r2", "25.10.4", "Goldeye", K91)
         preview = rendered_release("k6.12.99-hailo4.21.0-r1", "25.10.9-RC.1", "Goldeye", K99)
         self.assertEqual(promote(stable, [preview])["makeLatest"], "true")
+
+
+class SignOffChain(unittest.TestCase):
+    """The issue build.yml opens, closed through promote.yml, yields notes
+    the installer's selection accepts, for that build's train only. Each
+    stage runs the real code (build.yml's and promote.yml's github-script
+    under node, the selection snippet from install.sh), so a marker format
+    change in any one of them breaks CI instead of silently approving
+    nothing, or everything."""
+
+    def chain(self, tag, version, train_name, kver, preview):
+        from test_issue_template import render_issue
+        from test_promote import apply, close
+        iss = render_issue(tag, version, train_name, kver, preview=preview)
+        iss = dict(iss, number=1, labels=[{"name": n} for n in iss["labels"]])
+        rel = dict(rendered_release(tag, version, train_name, kver, prerelease=True),
+                   id=1, created_at="2026-01-01T00:00:00Z")
+        rels = [rel]
+        before = run_selection(rels, version, kver)
+        out = close(iss, rels)
+        self.assertEqual(len(out["updates"]), 1, out)
+        return before, apply(rels, out["updates"][0])
+
+    def test_preview_sign_off_approves_train_26_only(self):
+        k = "6.18.42-production+truenas"
+        before, rels = self.chain("k6.18.42-hailo4.21.0-r47", "26.0.0-BETA.3",
+                                  "Halfmoon", k, preview=True)
+        self.assertNotEqual(before.returncode, 0)
+        self.assertTrue(rels[0]["prerelease"])
+        self.assertIn(f"\n\n{marker('26')}\n", rels[0]["body"])
+        p = run_selection(rels, "26.0.0-BETA.3", k)
+        self.assertEqual(p.stdout, "k6.18.42-hailo4.21.0-r47", p.stderr)
+        p = run_selection(rels, "26.0.0-BETA.4", k)
+        self.assertEqual(p.stdout, "k6.18.42-hailo4.21.0-r47", p.stderr)
+
+    def test_stable_sign_off_promotes_and_approves_25_10(self):
+        before, rels = self.chain("k6.12.105-hailo4.21.0-r46", "25.10.7",
+                                  "Goldeye", "6.12.105-production+truenas", preview=False)
+        self.assertNotEqual(before.returncode, 0)
+        self.assertFalse(rels[0]["prerelease"])
+        self.assertIn(marker("25.10"), rels[0]["body"])
+        p = run_selection(rels, "25.10.8", "6.12.105-production+truenas")
+        self.assertEqual(p.stdout, "k6.12.105-hailo4.21.0-r46", p.stderr)
+        # The coverage gate agrees for the next version on that kernel.
+        self.assertEqual(run_coverage(rels, kver="6.12.105-production+truenas",
+                                      version="25.10.8"),
+                         "promoted k6.12.105-hailo4.21.0-r46")
 
 
 class SupportedVersionsTable(unittest.TestCase):

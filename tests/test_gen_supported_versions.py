@@ -143,11 +143,49 @@ class KernelRows(unittest.TestCase):
     def test_preview_release_row(self):
         rows = rows_for([release("v26.0.0-BETA.2-hailo4.21.0-r38",
                                  "26.0.0-BETA.2", "Halfmoon",
-                                 "6.18.23-production+truenas", prerelease=True)])
+                                 "6.18.23-production+truenas", prerelease=True,
+                                 trains=["26"])])
         pr = [r for r in rows if r["channel"] == "Preview (beta)"]
         self.assertEqual(len(pr), 1)
         self.assertEqual(pr[0]["versions"], "26.0.0-BETA.2")
         self.assertEqual(pr[0]["tag"], "v26.0.0-BETA.2-hailo4.21.0-r38")
+
+    def test_unapproved_preview_build_is_listed_as_waiting(self):
+        # The installer serves nothing unapproved on the preview channel
+        # either, so the row names the build as waiting for its test.
+        rows = rows_for([release("k6.18.42-hailo4.21.0-r47", "26.0.0-BETA.3",
+                                 "Halfmoon", "6.18.42-production+truenas",
+                                 prerelease=True)])
+        pr = [r for r in rows if r["channel"] == "Preview (beta)"][0]
+        self.assertEqual(pr["tag"], "")
+        self.assertEqual(pr["pending_tag"], "k6.18.42-hailo4.21.0-r47")
+        line = [ln for ln in gsv.render_table(rows) if "26.0.0-BETA.3" in ln][0]
+        self.assertIn("k6.18.42-hailo4.21.0-r47", line)
+        self.assertIn("_(awaiting hardware test)_", line)
+
+    def test_preview_row_names_newest_approved_not_newest(self):
+        rows = rows_for([
+            release("k6.18.42-hailo4.21.0-r48", "26.0.0-BETA.3", "Halfmoon",
+                    "6.18.42-production+truenas", prerelease=True,
+                    published="2026-02-01T00:00:00Z"),
+            release("k6.18.42-hailo4.21.0-r47", "26.0.0-BETA.3", "Halfmoon",
+                    "6.18.42-production+truenas", prerelease=True,
+                    trains=["26"], published="2026-01-01T00:00:00Z")])
+        pr = [r for r in rows if r["channel"] == "Preview (beta)"][0]
+        self.assertEqual(pr["tag"], "k6.18.42-hailo4.21.0-r47")
+
+    def test_preview_marker_for_another_train_does_not_approve(self):
+        rows = rows_for([release("k6.18.42-hailo4.21.0-r47", "26.0.0-BETA.3",
+                                 "Halfmoon", "6.18.42-production+truenas",
+                                 prerelease=True, trains=["25.10"])])
+        pr = [r for r in rows if r["channel"] == "Preview (beta)"][0]
+        self.assertEqual(pr["tag"], "")
+
+    def test_train_key_is_the_installers(self):
+        self.assertEqual(gsv.train_key("26.0.0-BETA.3"), "26")
+        self.assertEqual(gsv.train_key("26.1.2"), "26")
+        self.assertEqual(gsv.train_key("25.10.7"), "25.10")
+        self.assertEqual(gsv.train_key("x"), "")
 
     def test_release_outside_map_keeps_own_row(self):
         rows = rows_for([release("v25.04.1-hailo4.20.0-r5", "25.04.1",
