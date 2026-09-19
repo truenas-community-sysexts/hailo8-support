@@ -32,12 +32,20 @@ class SharedHelpers(unittest.TestCase):
         # depends on whatever the Latest release ships (the Latest at the
         # time of the kernel-keyed migration shipped no hailo-lib.sh, so
         # every install died before doing anything).
-        for script in ("install.sh", "restore.sh", "uninstall.sh"):
-            text = (SCRIPTS / script).read_text()
+        for path in (SCRIPTS / "install.sh", SCRIPTS / "restore.sh",
+                     SCRIPTS / "uninstall.sh", SCRIPTS.parent / "get.sh"):
+            text = path.read_text()
             self.assertIsNone(
                 re.search(r"^\s*(source|\.)\s", text, re.MULTILINE),
-                f"{script} sources another file")
-            self.assertNotIn("hailo-lib.sh", text, script)
+                f"{path.name} sources another file")
+            self.assertNotIn("hailo-lib.sh", text, path.name)
+
+    def test_nothing_is_fetched_from_latest(self):
+        # The installer scripts come from the release approved for the box's
+        # train, never from GitHub's Latest (install.sh's messages may still
+        # point people at the releases page).
+        for path in (SCRIPTS / "uninstall.sh", SCRIPTS.parent / "get.sh"):
+            self.assertNotIn("releases/latest", path.read_text(), path.name)
 
 
 if __name__ == "__main__":

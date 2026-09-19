@@ -248,6 +248,20 @@ class Commands(unittest.TestCase):
         self.assertIn("never promoted", preview)
         self.assertNotIn("promotes", preview)
 
+    def test_sign_off_says_it_approves_the_build_for_its_train(self):
+        # promote.yml turns a completed close into the train's
+        # verified-train marker on both channels; nothing installs the
+        # build before that.
+        for params in (STABLE, PREVIEW):
+            body = render_issue(**params)["body"]
+            works = next(ln for ln in body.splitlines() if ln.startswith("- **Works:**"))
+            self.assertIn("approves", works)
+            self.assertIn("`get.sh`", works)
+            self.assertIn(f"{params['train']} systems running kernel `{params['kver']}`", works)
+        preview = render_issue(**PREVIEW)["body"]
+        self.assertIn("No system installs it until this test signs it off", preview)
+        self.assertNotIn("keep installing it", preview)
+
 
 if __name__ == "__main__":
     unittest.main()

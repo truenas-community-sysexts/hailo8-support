@@ -203,7 +203,8 @@ jobs:
       # version string, and point releases usually reuse the previous kernel.
       # Resolve the new version's kernel from its rootfs.mtree manifest (small
       # text fetch, no ISO); if a release for (kernel, current driver) already
-      # exists, no build is needed; only a PROMOTED one lets the tracked
+      # exists, no build is needed; only one APPROVED for the new version's
+      # train (promoted, or signed off for that train) lets the tracked
       # version advance (see check-kernel-coverage.py). Coverage only counts
       # once the Latest release is kernel-keyed: the one-line installer runs
       # Latest's install.sh, and a pre-migration one matches exact versions
@@ -247,12 +248,12 @@ jobs:
           case "$COVERAGE" in
             promoted\ *)
               COVERING_TAG="${COVERAGE#promoted }"
-              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by promoted release ${COVERING_TAG}; the installer serves this version by kernel match. Tracked versions still update."
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by release ${COVERING_TAG}, approved for this train; the installer serves this version by kernel match. Tracked versions still update."
               echo "covered=true" >> "$GITHUB_OUTPUT"
               ;;
             pending\ *)
               COVERING_TAG="${COVERAGE#pending }"
-              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; unpromoted build ${COVERING_TAG} is awaiting hardware-test promotion. No duplicate build is dispatched, and the tracked version does not advance until that release is promoted."
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; build ${COVERING_TAG} is awaiting its hardware-test sign-off for this train. No duplicate build is dispatched, and the tracked version does not advance until that release is approved."
               echo "covered=true" >> "$GITHUB_OUTPUT"
               echo "covered_pending=true" >> "$GITHUB_OUTPUT"
               ;;
@@ -644,10 +645,11 @@ jobs:
       #   - preview: built when the TrueNAS beta or the driver moved.
       # So a driver bump produces BOTH a 25.x and a 26-beta build ("each
       # release has both"); a TrueNAS-only bump on one channel builds only that
-      # channel. mark_latest='false' on both keeps unverified auto-builds out of
-      # /releases/latest; preview builds additionally never promote (build.yml
-      # gives them the preview-hardware-test label and promote.yml refuses
-      # beta/RC tags).
+      # channel. build.yml publishes every build as a prerelease with no
+      # verified-train marker, so no installer serves it until its hardware
+      # test signs it off; preview builds additionally never promote (build.yml
+      # gives them the preview-hardware-test label, and promote.yml only adds
+      # their train's marker).
       # ─────────────────────────────────────────────────────────────────────
       - name: Trigger stable build
         if: >-
@@ -666,8 +668,7 @@ jobs:
                 truenas_version:      '${{ steps.write.outputs.truenas_version }}',
                 hailo_driver_version: '${{ steps.write.outputs.hailo_driver }}',
                 train_name:           '${{ steps.write.outputs.train }}',
-                runner:               '${{ steps.runner.outputs.runner }}',
-                mark_latest:          'false'
+                runner:               '${{ steps.runner.outputs.runner }}'
               }
             });
             console.log('Dispatched stable build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.runner.outputs.runner }}');
@@ -688,8 +689,7 @@ jobs:
                 hailo_driver_version: '${{ steps.write.outputs.hailo_driver }}',
                 train_name:           '${{ steps.write.outputs.preview_train }}',
                 runner:               '${{ steps.write.outputs.preview_runner }}',
-                iso_url:              '${{ steps.write.outputs.preview_iso_url }}',
-                mark_latest:          'false'
+                iso_url:              '${{ steps.write.outputs.preview_iso_url }}'
               }
             });
             console.log('Dispatched preview build.yml: TrueNAS ${{ steps.write.outputs.preview_version }} (${{ steps.write.outputs.preview_train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.write.outputs.preview_runner }}, iso_url ${{ steps.write.outputs.preview_iso_url }}');
