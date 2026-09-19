@@ -4,26 +4,27 @@
 
 ## Installing a Specific Version
 
-Release tags encode both versions: `v<truenas>-hailo<driver>` (e.g., `v25.10.2.1-hailo4.21.0`).
+Release tags encode the kernel the build targets: `k<kernel>-hailo<driver>-r<run>` (e.g., `k6.12.91-hailo4.21.0-r41`). Releases published before the kernel-keyed migration keep their older `v<truenas>-hailo<driver>` tags (e.g., `v25.10.2.1-hailo4.21.0`); both install the same way. The README supported versions table maps TrueNAS versions to the release serving them.
 
 To install from a specific release:
 
 ```bash
 # Download install.sh from a specific release tag
-curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/v25.10.2.1-hailo4.21.0/install.sh | sudo bash
+curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/k6.12.91-hailo4.21.0-r41/install.sh | sudo bash
 ```
 
 Or download `hailo.raw` manually and install it:
 
 ```bash
 # Download hailo.raw from a specific release
-curl -fSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/v25.10.2.1-hailo4.21.0/hailo.raw -o /tmp/hailo.raw
+curl -fSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/k6.12.91-hailo4.21.0-r41/hailo.raw -o /tmp/hailo.raw
 sudo bash install.sh /tmp/hailo.raw
 ```
 
-> **Warning:** Using a `hailo.raw` built for a different TrueNAS version will fail to load
-> the kernel module. The module is compiled against exact kernel headers - a version mismatch
-> means `insmod` will refuse to load it. Always use the release matching your TrueNAS version.
+> **Warning:** Using a `hailo.raw` built for a different kernel will fail to load
+> the kernel module. The module is compiled against exact kernel headers - a kernel mismatch
+> means `insmod` will refuse to load it. Always use the release matching your running kernel
+> (`uname -r`); the installer checks this before touching the system.
 
 ## Install Options
 

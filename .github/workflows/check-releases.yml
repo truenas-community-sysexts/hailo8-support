@@ -199,6 +199,70 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # ─────────────────────────────────────────────────────────────────────
+      # Kernel coverage gate: the sysext binds to the kernel, not the TrueNAS
+      # version string, and point releases usually reuse the previous kernel.
+      # Resolve the new version's kernel from its rootfs.mtree manifest (small
+      # text fetch, no ISO); if a release for (kernel, current driver) already
+      # exists, no build is needed; only a PROMOTED one lets the tracked
+      # version advance (see check-kernel-coverage.py). Coverage only counts
+      # once the Latest release is kernel-keyed: the one-line installer runs
+      # Latest's install.sh, and a pre-migration one matches exact versions
+      # only. An unresolvable kernel or Latest falls through to "build", the
+      # safe default.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Resolve kernel and check coverage
+        id: kernel
+        if: steps.truenas.outputs.changed == 'true'
+        env:
+          NEW_VERSION: ${{ steps.truenas.outputs.version }}
+          NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          CURRENT_DRIVER: ${{ steps.tracked.outputs.hailo_driver }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          MTREE_URL="https://download.truenas.com/TrueNAS-SCALE-${NEW_TRAIN}/${NEW_VERSION}/rootfs.mtree"
+          NEW_KERNEL=$(curl -fsSL "$MTREE_URL" 2>/dev/null \
+            | grep -oE 'usr/lib/modules/[0-9][^/ ]*production[^/ ]*' \
+            | head -1 | sed 's#usr/lib/modules/##') || true
+
+          if [ -z "$NEW_KERNEL" ]; then
+            echo "Kernel for ${NEW_VERSION} not resolvable (no rootfs.mtree yet); building."
+            echo "covered=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
+          export NEW_KERNEL
+
+          # Rollout guard input. A failed lookup leaves LATEST_TAG empty,
+          # which the coverage script treats as not kernel-keyed (build).
+          LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null) || LATEST_TAG=""
+          echo "Latest release: ${LATEST_TAG:-(lookup failed)}"
+          export LATEST_TAG
+
+          # A transient API or parse failure must not fail the daily check:
+          # the safe default is covered=false (build it).
+          COVERAGE=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 .github/scripts/check-kernel-coverage.py) || COVERAGE=""
+
+          case "$COVERAGE" in
+            promoted\ *)
+              COVERING_TAG="${COVERAGE#promoted }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by promoted release ${COVERING_TAG}; the installer serves this version by kernel match. Tracked versions still update."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              ;;
+            pending\ *)
+              COVERING_TAG="${COVERAGE#pending }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; unpromoted build ${COVERING_TAG} is awaiting hardware-test promotion. No duplicate build is dispatched, and the tracked version does not advance until that release is promoted."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              echo "covered_pending=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "No release the one-line installer can serve covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
+              echo "covered=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # ─────────────────────────────────────────────────────────────────────
       # TrueNAS preview (beta) check: TrueNAS 26 betas are not published to
       # scale-build tags or download.truenas.com and ship no GITMANIFEST. They
       # live under a browsable channel (iso.sys.truenas.net/TrueNAS-26-BETA/).
@@ -293,7 +357,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       # Hailo check: enumerate tags reachable from hailort-drivers' hailo8
       # branch (master tracks 5.x for Hailo-10/15 — does not support Hailo-8),
-      # then cap at the version pinned in Frigate's install scripts on dev.
+      # then cap at the HailoRT version Frigate pins on dev.
       # The cap is the gate; HailoRT enforces exact-match between kernel
       # driver and userspace library, and Frigate is the consumer the sysext
       # exists to serve.
@@ -329,10 +393,14 @@ jobs:
           # Parse defensively. Soft failures here are dangerous: if we silently
           # pick the wrong version, the next bump can ship a sysext that breaks
           # users on reboot. Both Frigate pin sources must agree, and the
-          # value must be a clean X.Y.Z release.
+          # value must be a clean X.Y.Z release. The two sources name the pin
+          # differently: the hailo detector plugin (HAILORT_VERSION, the
+          # HailoRT Frigate installs at first start) and the Hailo-8L host
+          # install script (hailo_version).
           parse_frigate_pin() {
             local url="$1"
             local label="$2"
+            local var="$3"
             local content line value count
             if ! content=$(curl -fsSL "$url"); then
               echo "::error title=Frigate pin parser::curl failed fetching ${label} (${url})"
@@ -340,25 +408,27 @@ jobs:
               return 1
             fi
             line=$(printf '%s\n' "$content" \
-              | grep -E '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=' \
+              | grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?${var}[[:space:]]*=" \
               || true)
             if [ -z "$line" ]; then
-              echo "::error title=Frigate pin parser::${label} contains no hailo_version assignment"
-              echo "ERROR: ${label} contains no hailo_version assignment" >&2
+              echo "::error title=Frigate pin parser::${label} contains no ${var} assignment"
+              echo "ERROR: ${label} contains no ${var} assignment" >&2
               return 1
             fi
             count=$(printf '%s\n' "$line" | wc -l | tr -d ' ')
             if [ "$count" -ne 1 ]; then
-              echo "::error title=Frigate pin parser::${label} has ${count} active hailo_version assignments (expected 1)"
-              echo "ERROR: ${label} has ${count} hailo_version assignments (expected 1):" >&2
+              echo "::error title=Frigate pin parser::${label} has ${count} active ${var} assignments (expected 1)"
+              echo "ERROR: ${label} has ${count} ${var} assignments (expected 1):" >&2
               printf '%s\n' "$line" >&2
               return 1
             fi
+            # The grep above pinned the line to "<var> = <value>", so the
+            # value is whatever follows the first "=", unquoted.
             value=$(printf '%s\n' "$line" \
-              | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\2/')
+              | sed -E 's/^[^=]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\1/')
             if ! printf '%s' "$value" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "::error title=Frigate pin parser::${label} hailo_version is not a clean X.Y.Z release: '${value}'"
-              echo "ERROR: ${label} hailo_version is not a clean X.Y.Z release: '${value}'" >&2
+              echo "::error title=Frigate pin parser::${label} ${var} is not a clean X.Y.Z release: '${value}'"
+              echo "ERROR: ${label} ${var} is not a clean X.Y.Z release: '${value}'" >&2
               echo "  raw line: ${line}" >&2
               return 1
             fi
@@ -366,24 +436,27 @@ jobs:
             printf '%s' "$value"
           }
 
-          if ! FRIGATE_MAIN_PIN=$(parse_frigate_pin \
-              "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/docker/main/install_hailort.sh" \
-              "frigate dev docker/main/install_hailort.sh"); then
-            echo "::error title=Frigate pin parser::failed to parse docker/main/install_hailort.sh — refusing to bump"
+          # Frigate dropped docker/main/install_hailort.sh when it moved to
+          # installing HailoRT at first start; the plugin constant is now the
+          # canonical pin.
+          if ! FRIGATE_PLUGIN_PIN=$(parse_frigate_pin \
+              "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/frigate/detectors/plugins/hailo.py" \
+              "frigate dev frigate/detectors/plugins/hailo.py" HAILORT_VERSION); then
+            echo "::error title=Frigate pin parser::failed to parse HAILORT_VERSION from frigate/detectors/plugins/hailo.py; refusing to bump"
             exit 1
           fi
           if ! FRIGATE_HAILO8L_PIN=$(parse_frigate_pin \
               "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/docker/hailo8l/user_installation.sh" \
-              "frigate dev docker/hailo8l/user_installation.sh"); then
-            echo "::error title=Frigate pin parser::failed to parse docker/hailo8l/user_installation.sh — refusing to bump"
+              "frigate dev docker/hailo8l/user_installation.sh" hailo_version); then
+            echo "::error title=Frigate pin parser::failed to parse hailo_version from docker/hailo8l/user_installation.sh; refusing to bump"
             exit 1
           fi
 
-          if [ "$FRIGATE_MAIN_PIN" != "$FRIGATE_HAILO8L_PIN" ]; then
-            echo "::error title=Frigate pins disagree::install_hailort.sh=${FRIGATE_MAIN_PIN}, user_installation.sh=${FRIGATE_HAILO8L_PIN} — refusing to guess which is canonical"
+          if [ "$FRIGATE_PLUGIN_PIN" != "$FRIGATE_HAILO8L_PIN" ]; then
+            echo "::error title=Frigate pins disagree::hailo.py HAILORT_VERSION=${FRIGATE_PLUGIN_PIN}, user_installation.sh hailo_version=${FRIGATE_HAILO8L_PIN}; refusing to guess which is canonical"
             exit 1
           fi
-          FRIGATE_PIN="$FRIGATE_MAIN_PIN"
+          FRIGATE_PIN="$FRIGATE_PLUGIN_PIN"
           echo "Frigate pinned version: ${FRIGATE_PIN}"
 
           if [ -z "$LATEST" ]; then
@@ -427,9 +500,15 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       - name: Resolve build runner
         id: runner
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.hailo.outputs.changed == 'true'
+        env:
+          # Same composite as TRUENAS_CHANGED: under covered_pending the
+          # dispatch builds the tracked version, so resolve its runner.
+          TRUENAS_EFFECTIVE: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
         run: |
-          if [ "${{ steps.truenas.outputs.changed }}" = "true" ]; then
+          if [ "$TRUENAS_EFFECTIVE" = "true" ]; then
             TRAIN="${{ steps.truenas.outputs.train }}"
             VERSION="${{ steps.truenas.outputs.version }}"
           else
@@ -445,11 +524,16 @@ jobs:
       # workflow file changes are needed. Commit message reflects the
       # combination so `git log` is self-explanatory.
       # ─────────────────────────────────────────────────────────────────────
+      # covered_pending holds the stable version back (see the coverage step);
+      # the composite TRUENAS_CHANGED keeps write, message, and condition agreed.
       - name: Update tracked-versions
         id: write
-        if: steps.truenas.outputs.changed == 'true' || steps.preview.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true') ||
+          steps.preview.outputs.changed == 'true' ||
+          steps.hailo.outputs.changed == 'true'
         env:
-          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
+          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
           PREVIEW_CHANGED: ${{ steps.preview.outputs.changed }}
@@ -566,7 +650,9 @@ jobs:
       # beta/RC tags).
       # ─────────────────────────────────────────────────────────────────────
       - name: Trigger stable build
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.hailo.outputs.changed == 'true'
         uses: actions/github-script@v9
         with:
           github-token: ${{ steps.app-token.outputs.token }}

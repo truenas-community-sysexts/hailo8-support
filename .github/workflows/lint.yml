@@ -6,12 +6,16 @@ on:
     paths:
       - 'scripts/**.sh'
       - '.github/scripts/**.sh'
+      - '.github/scripts/**.py'
+      - 'tests/**'
       - '.github/workflows/**.yml'
       - '.github/tracked-versions.json'
   pull_request:
     paths:
       - 'scripts/**.sh'
       - '.github/scripts/**.sh'
+      - '.github/scripts/**.py'
+      - 'tests/**'
       - '.github/workflows/**.yml'
       - '.github/tracked-versions.json'
   workflow_dispatch:
@@ -45,8 +49,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Download actionlint
         # Pinned download script from upstream. actionlint auto-runs
-        # shellcheck against `run:` blocks when shellcheck is on PATH —
-        # ubuntu-latest preinstalls it — so this also catches issues in
+        # shellcheck against `run:` blocks when shellcheck is on PATH
+        # (ubuntu-latest preinstalls it), so this also catches issues in
         # build.yml's inline shell that the standalone shellcheck job
         # doesn't see.
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -56,3 +60,13 @@ jobs:
         # actionlint runs shellcheck with default severity (style) and would
         # flag style/info issues that the project has explicitly excluded.
         run: ./actionlint -color -shellcheck "shellcheck --severity=warning"
+
+  python:
+    name: python scripts and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Byte-compile scripts
+        run: python3 -m py_compile .github/scripts/*.py
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v

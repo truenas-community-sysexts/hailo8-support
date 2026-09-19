@@ -1,0 +1,27 @@
+{
+  "trains": {
+    "Fangtooth": {
+      "25.04.0": "6.12.15-production+truenas",
+      "25.04.1": "6.12.15-production+truenas",
+      "25.04.2": "6.12.15-production+truenas",
+      "25.04.2.1": "6.12.15-production+truenas",
+      "25.04.2.3": "6.12.15-production+truenas",
+      "25.04.2.4": "6.12.15-production+truenas",
+      "25.04.2.5": "6.12.15-production+truenas",
+      "25.04.2.6": "6.12.15-production+truenas"
+    },
+    "Goldeye": {
+      "25.10.0": "6.12.33-production+truenas",
+      "25.10.0.1": "6.12.33-production+truenas",
+      "25.10.1": "6.12.33-production+truenas",
+      "25.10.2": "6.12.33-production+truenas",
+      "25.10.2.1": "6.12.33-production+truenas",
+      "25.10.3": "6.12.33-production+truenas",
+      "25.10.3.1": "6.12.33-production+truenas",
+      "25.10.4": "6.12.91-production+truenas",
+      "25.10.5": "6.12.95-production+truenas",
+      "25.10.6": "6.12.99-production+truenas"
+    }
+  },
+  "unresolved": {}
+}
