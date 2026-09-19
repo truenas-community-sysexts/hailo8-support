@@ -2,23 +2,56 @@
 
 > **Runs as root.** `install.sh` performs privileged operations (writes to a data pool, manages sysexts via `systemd-sysext`, calls `midclt`, loads kernel modules), so it must run as root. Use `sudo` as shown in every example below. `--check` and `--dry-run` also require root; only `--help` runs without it.
 
+## The one line installer (`get.sh`)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/hailo8-support/main/get.sh | sudo bash
+```
+
+`get.sh` lives on this repo's `main` branch (changed only through reviewed pull requests). It:
+
+1. reads the TrueNAS version (`midclt call system.info`) and the running kernel (`uname -r`), and derives the TrueNAS train (see below);
+2. lists this repo's releases and picks the newest build approved for that train and built for that exact kernel and train, the same selection `install.sh` runs on its own;
+3. downloads **that release's** `install.sh`, `hailo.raw`, `hailo.raw.sha256` and `firmware.sha256`, verifies the image, and runs the release's own installer on it with the firmware version and sha the release pins. Every installer from r37 on takes a local image this way, so what installs is exactly the approved build.
+
+Options go after `bash -s --`. Anything `get.sh` does not consume is passed to the release's `install.sh`:
+
+| Option | Description |
+| --- | --- |
+| `--release=TAG` | Use this release as given, skipping the selection (for example a build you are hardware-testing) |
+| `--uninstall` | Run the approved release's `uninstall.sh` (and the `restore.sh` beside it) instead of installing |
+| `--repo=OWNER/NAME` | Use a fork's releases (also `HAILO_REPO`) |
+| `--check`, `--help` | Passed to the release's `install.sh`, which needs no image for them |
+
+`--uninstall`, `--check` and `--help` only need the release's scripts, so on a kernel with no approved build they use the newest release approved for your train.
+
+## Per-train approval
+
+Nothing untested is installed, on stable or preview (beta) systems. Every build is published as a pre-release with a hardware-test issue, and a release is **approved** for a TrueNAS train when either:
+
+- its notes carry `<!-- verified-train: <train> -->` for that train. `promote.yml` writes it when the build's hardware-test issue is closed as completed; the train is the one the build was made for (from the notes header). A stable build is also promoted to a full release at that point. A preview build stays a pre-release for good; the marker alone approves it; or
+- it is a full release with no `verified-train` marker at all: promoted before per-train sign-off, so approved for every train.
+
+The **train** is the major version from 26 on (every 26.x release, betas included, is train `26`) and major.minor before that (`25.10`, `25.04`). A build must also target your exact running kernel, and come from your train (the train guard: the sysext ships userspace built against that train's base system). A stable system never installs a preview (beta) build. With no approved build for your kernel the installer stops and names the hardware-test issue that is waiting; see [troubleshooting](troubleshooting.md#no-approved-build-for-your-kernel-yet).
+
 ## Installing a Specific Version
 
 Release tags encode the kernel the build targets: `k<kernel>-hailo<driver>-r<run>` (e.g., `k6.12.91-hailo4.21.0-r41`). Releases published before the kernel-keyed migration keep their older `v<truenas>-hailo<driver>` tags (e.g., `v25.10.2.1-hailo4.21.0`); both install the same way. The README supported versions table maps TrueNAS versions to the release serving them.
 
-To install from a specific release:
+To install a specific release, pin it with `--release` (no selection, so this also installs a build that is not approved yet, for example to hardware-test it):
 
 ```bash
-# Download install.sh from a specific release tag
-curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/k6.12.91-hailo4.21.0-r41/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/hailo8-support/main/get.sh | sudo bash -s -- --release=k6.12.91-hailo4.21.0-r41
 ```
 
-Or download `hailo.raw` manually and install it:
+Or download a release's files and install its `hailo.raw` by hand. A local image needs the HailoRT version (from the tag) and the release's `firmware.sha256`:
 
 ```bash
-# Download hailo.raw from a specific release
-curl -fSL https://github.com/truenas-community-sysexts/hailo8-support/releases/download/k6.12.91-hailo4.21.0-r41/hailo.raw -o /tmp/hailo.raw
-sudo bash install.sh /tmp/hailo.raw
+TAG=k6.12.91-hailo4.21.0-r41
+BASE=https://github.com/truenas-community-sysexts/hailo8-support/releases/download/$TAG
+for f in hailo.raw hailo.raw.sha256 install.sh firmware.sha256; do curl -fsSL "$BASE/$f" -o "$f"; done
+sha256sum -c hailo.raw.sha256
+sudo bash install.sh ./hailo.raw --firmware-version=4.21.0 --expected-firmware-sha="$(cat firmware.sha256)"
 ```
 
 > **Warning:** Using a `hailo.raw` built for a different kernel will fail to load
@@ -31,6 +64,8 @@ sudo bash install.sh /tmp/hailo.raw
 | Option | Description |
 | --- | --- |
 | `--repo=OWNER/NAME` | GitHub repo for releases (default: `truenas-community-sysexts/hailo8-support`). Also settable via `HAILO_REPO` env var. |
+| `--firmware-version=X.Y.Z` | With a local `hailo.raw`: the HailoRT version whose firmware to download |
+| `--expected-firmware-sha=HEX` | With a local `hailo.raw`: the expected sha256 of that firmware (the release's `firmware.sha256`) |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
 | `--persist-path=PATH` | Persistent config directory. Must be `/mnt/<pool>/.config/hailo` (the exact location the boot-time PREINIT script scans). Prefer `--pool`, which builds this path for you. |
 | `--check` | Probe an existing install (read-only) and report status |
@@ -45,7 +80,7 @@ sudo bash install.sh /tmp/hailo.raw
 # Probe an existing install
 sudo ./install.sh --check
 # Or via curl
-curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh | sudo bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/hailo8-support/main/get.sh | sudo bash -s -- --check
 ```
 
 **`--dry-run`** performs every read/network/validation step (release lookup, sha256 verify, firmware download, squashfs unpack/repack) but skips every command that mutates the running system. Each skipped mutation is logged as `[dry-run] would: <command>`.
@@ -54,7 +89,7 @@ curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/
 
 ## What the Install Script Does
 
-1. **Downloads `hailo.raw`** from the GitHub release matching your TrueNAS version (or uses a local file)
+1. **Downloads `hailo.raw`** from the newest release approved for your TrueNAS train and built for your running kernel (or uses a local file, which is what `get.sh` hands it)
 2. **Verifies the checksum** (SHA256)
 3. **Downloads Hailo-8 firmware** directly from Hailo's S3 servers (not redistributed by this project)
 4. **Verifies firmware SHA256** against the hash published as the release's `firmware.sha256` asset
@@ -105,7 +140,8 @@ If you want tighter permissions, edit the rule in the sysext to use `GROUP="vide
 
 | Script | Purpose |
 | --- | --- |
+| `get.sh` | One line installer served from `main`: picks the approved release and runs that release's `install.sh` (or `uninstall.sh`) |
 | `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
-| `scripts/uninstall.sh` | Discoverable alias - downloads and runs `restore.sh` |
+| `scripts/uninstall.sh` | Discoverable alias - runs `restore.sh` (fetched from the release approved for the train when piped from curl) |
 | `scripts/restore.sh` | Uninstalls sysext, deregisters init script, cleans up persistent storage |
 | `scripts/hailo-preinit.sh` | Boot-time script - activates sysext before apps start (bundled inside hailo.raw at `/usr/lib/hailo/`) |
