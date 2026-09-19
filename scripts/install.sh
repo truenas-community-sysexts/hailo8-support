@@ -184,6 +184,45 @@ if_real() {
     fi
 }
 
+# hailo_init_script_lookup
+#
+# Locate any registered TrueNAS init script related to this fork (matches
+# "hailo-preinit", "hailo-postinit", or ".config/hailo" in the command/script
+# field). Used for --check probing and for finding an existing entry to
+# update. restore.sh carries an identical copy for deregistration; the
+# helper is inlined in both because a `curl | bash` run has no sibling file
+# to source, and fetching one at run time made every install depend on what
+# the Latest release happened to ship. tests/test_script_helpers.py keeps
+# the two copies identical.
+#
+# Prints:
+#   <id>|<when>|<enabled>  if found (when=PREINIT/POSTINIT/...; enabled=True/False)
+#   (empty)                if no matching script is registered
+#   error                  if midclt is unreachable / response unparseable
+#
+# Always exits 0; callers branch on the printed token.
+hailo_init_script_lookup() {
+    local result
+    # Use %-formatting (not f-strings): the surrounding bash uses single
+    # quotes for the python source so we can't put `'` inside the python
+    # body, and an f-string with `"` keys would need `\"` escapes that
+    # don't parse inside f-string `{}` blocks.
+    result=$(midclt call initshutdownscript.query 2>/dev/null \
+        | python3 -c '
+import sys, json
+try:
+    scripts = json.load(sys.stdin)
+    for s in scripts:
+        cmd = s.get("command", "") or s.get("script", "")
+        if "hailo-preinit" in cmd or "hailo-postinit" in cmd or ".config/hailo" in cmd:
+            print("%s|%s|%s" % (s["id"], s.get("when", ""), s.get("enabled", False)), end="")
+            sys.exit(0)
+except Exception:
+    print("error", end="")
+' 2>/dev/null) || result=error
+    printf '%s' "$result"
+}
+
 # resolve_persist_dir — determine where persistent config lives.
 # Priority: --persist-path > --pool > existing config dir > only-data-pool
 #         > interactive prompt (multi-pool) > error (no tty + ambiguous)
@@ -407,36 +446,6 @@ if [ "$REPO" = "scyto/truenas-hailo" ]; then
     REPO="truenas-community-sysexts/hailo8-support"
 fi
 
-# Source shared library (provides hailo_init_script_lookup).
-# Try the sibling file first (checkout or extracted release); fall back to
-# downloading from the release for the curl|bash case.
-_source_hailo_lib() {
-    local dir
-    dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || dir=""
-    if [ -n "$dir" ] && [ -f "${dir}/hailo-lib.sh" ]; then
-        # shellcheck source=scripts/hailo-lib.sh
-        source "${dir}/hailo-lib.sh"
-        return 0
-    fi
-    local tmp
-    tmp=$(mktemp /tmp/hailo-lib.XXXXXXXXXX)
-    if curl -fsSL --max-time 30 \
-           "https://github.com/${REPO}/releases/latest/download/hailo-lib.sh" \
-           -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-        # shellcheck source=scripts/hailo-lib.sh
-        source "$tmp"
-        rm -f "$tmp"
-        return 0
-    fi
-    rm -f "$tmp"
-    return 1
-}
-_source_hailo_lib || {
-    echo "ERROR: Could not load hailo-lib.sh (not found locally, download failed)." >&2
-    echo "  Run from the release directory, or ensure network access to GitHub." >&2
-    exit 1
-}
-
 if [ "$CHECK_MODE" = "1" ]; then
     do_check
     exit $?
@@ -446,6 +455,10 @@ WORK_DIR=$(mktemp -d /tmp/hailo-install.XXXXXXXXXX)
 
 cleanup() {
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
+    # A staged image an interrupted install left next to the live one.
+    if [ "$DRY_RUN" != "1" ] && [ -n "${HAILO_RAW_NEW:-}" ]; then
+        rm -f "$HAILO_RAW_NEW"
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -573,18 +586,37 @@ def same_train(release):
     if not m:
         return True
     return train_key(m.group(1)) == train_key(version)
-def preview_tagged(release):
+def preview_release(release):
+    # Kernel-keyed tags (k6.18.23-...) carry no BETA marker, so the tag
+    # check alone stopped covering new preview builds; the notes header
+    # still names the TrueNAS version they were built for.
     tu = release.get('tag_name', '').upper()
-    return ('-BETA' in tu) or ('-RC' in tu)
-# A stable box also refuses BETA/RC-tagged releases outright. The old
+    if ('-BETA' in tu) or ('-RC' in tu):
+        return True
+    m = hdr_re.search(release.get('body') or '')
+    hv = m.group(1).upper() if m else ''
+    return ('-BETA' in hv) or ('-RC' in hv)
+# A stable box also refuses preview (BETA/RC) releases outright. The old
 # version-prefix match made installing one structurally impossible; with
 # kernel matching, the prerelease flag alone would be one mispublished
 # release away from serving a beta build to stable boxes.
 candidates = [r for r in data
               if not r.get('draft')
-              and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
-matches = [r for r in candidates if target_kernel(r) == kver and same_train(r)]
-cross = [r for r in candidates if target_kernel(r) == kver and not same_train(r)]
+              and (is_preview or (not r.get('prerelease') and not preview_release(r)))]
+# The Target kernel notes row is the primary key. A k-tag whose body lost
+# the row still encodes its short kernel in the tag; check-releases counts
+# such a release as covering its kernel (and skips builds for it), so the
+# installer must serve it by the same rule. A body row always wins over the
+# tag: it is written from REAL_KVER at build time, so a tag/body mismatch
+# means a mispublished release that must not be served.
+short = kver.split('-')[0]
+def kernel_match(release):
+    tk = target_kernel(release)
+    if tk:
+        return tk == kver
+    return release.get('tag_name', '').startswith(f'k{short}-hailo')
+matches = [r for r in candidates if kernel_match(r) and same_train(r)]
+cross = [r for r in candidates if kernel_match(r) and not same_train(r)]
 for r in cross:
     print('WARNING: ' + r.get('tag_name', '?') + ' matches kernel ' + kver
           + ' but was built for a different TrueNAS train; not using it'
@@ -602,10 +634,10 @@ if not matches:
 if not matches:
     channel = 'preview (beta)' if is_preview else 'stable'
     print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
-    # not preview_tagged: previews never promote, so the hint would be false
+    # not preview_release: previews never promote, so the hint would be false
     pending = [r for r in data
                if not r.get('draft') and r.get('prerelease')
-               and not preview_tagged(r)
+               and not preview_release(r)
                and target_kernel(r) == kver]
     if pending and not is_preview:
         print('A build for this kernel exists but is a prerelease awaiting hardware-test', file=sys.stderr)
@@ -669,13 +701,14 @@ if [ -n "${RELEASE_TAG:-}" ]; then
     # Extract the hailo version from tags like:
     #   v25.10.2.1-hailo4.20.0                 (legacy, pre-issue-#17)
     #   v25.10.3-hailo4.21.0-g7854543          (legacy, SHA-suffixed)
-    #   v25.10.3.1-hailo4.21.0-r23             (current, run-number suffix)
+    #   v25.10.3.1-hailo4.21.0-r23             (legacy, run-number suffix)
+    #   k6.12.91-hailo4.21.0-r41               (current, kernel-keyed)
     # The capture stops at the first non-[0-9.] char after `hailo`, so any
     # `-r<run>` / `-g<sha>` suffix is left out of $HAILO_VERSION.
     HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9][0-9.]*\).*/\1/p')
     if [ -z "$HAILO_VERSION" ]; then
         echo "ERROR: Could not parse HailoRT version from release tag '${RELEASE_TAG}'." >&2
-        echo "  Expected format: v<truenas>-hailo<driver>[-r<run>]" >&2
+        echo "  Expected format: k<kernel>-hailo<driver>-r<run> (or legacy v<truenas>-hailo<driver>[-r<run>])" >&2
         exit 1
     fi
 
@@ -818,8 +851,14 @@ HAILO_RAW="${PERSIST_DIR}/hailo.raw"
 
 # Write the sysext image to the data pool. This is the single copy we activate
 # and the one that survives reboots and TrueNAS updates (no boot-pool copy).
+# On a reinstall the existing file is the live, loop-mounted image, so it must
+# not be rewritten in place: stage the new image in the same directory and
+# rename it over the old one. The rename is atomic, and the mounted loop
+# device keeps the old inode until the unmerge below.
 echo "Installing hailo.raw to ${HAILO_RAW}..."
-if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW}"
+HAILO_RAW_NEW="${HAILO_RAW}.new"
+if_real cp "${WORK_DIR}/hailo.raw" "${HAILO_RAW_NEW}"
+if_real mv -f "${HAILO_RAW_NEW}" "${HAILO_RAW}"
 
 # Remove hailo from sysext before modifying. If nothing is currently merged,
 # unmerge exits non-zero with "No extensions found" on stderr, which is fine.

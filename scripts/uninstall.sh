@@ -21,7 +21,8 @@ fi
 
 # Fallback: stdin path. Resolve the matching restore.sh from the latest
 # release of the fork that shipped this script. HAILO_REPO is honored to
-# match install.sh's --repo= override.
+# match install.sh's --repo= override. restore.sh is self-contained (it
+# sources no sibling files), so whichever release is Latest can run it.
 REPO="${HAILO_REPO:-truenas-community-sysexts/hailo8-support}"
 # Repo moved from scyto/truenas-hailo; redirect stale env-var/docs to the new slug.
 if [ "$REPO" = "scyto/truenas-hailo" ]; then
@@ -29,7 +30,7 @@ if [ "$REPO" = "scyto/truenas-hailo" ]; then
     REPO="truenas-community-sysexts/hailo8-support"
 fi
 BASE_URL="https://github.com/${REPO}/releases/latest/download"
-echo "uninstall.sh: fetching restore.sh + hailo-lib.sh from ${REPO}/releases/latest..." >&2
+echo "uninstall.sh: fetching restore.sh from ${REPO}/releases/latest..." >&2
 TMPDIR=$(mktemp -d /tmp/hailo-uninstall.XXXXXXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 if ! curl -fsSL --max-time 60 "${BASE_URL}/restore.sh" -o "${TMPDIR}/restore.sh"; then
@@ -40,9 +41,5 @@ if [ ! -s "${TMPDIR}/restore.sh" ]; then
     echo "ERROR: downloaded restore.sh is empty (${REPO}/releases/latest)" >&2
     exit 1
 fi
-# hailo-lib.sh is a shared library that restore.sh sources at startup.
-# A download failure is not fatal here: restore.sh has its own fallback
-# that re-fetches the lib if the sibling is missing.
-curl -fsSL --max-time 30 "${BASE_URL}/hailo-lib.sh" -o "${TMPDIR}/hailo-lib.sh" 2>/dev/null || true
 bash "${TMPDIR}/restore.sh" "$@"
 exit $?

@@ -23,7 +23,9 @@ The table below is generated from the TrueNAS kernel map and this repo's **actua
 
 A build is keyed to the kernel, not the TrueNAS version: TrueNAS point releases often ship the same kernel, so one release covers every version listed on its row. Rows marked "not built yet" are kernels no release targets so far.
 
-`install.sh` matches releases by your running kernel (`uname -r`). Any TrueNAS version on a row is installable with the one line installer, whether or not that exact version ever had its own build. Stable systems only ever receive promoted (hardware verified) builds; preview systems receive the prerelease matching their kernel.
+`install.sh` matches releases by your running kernel (`uname -r`), so any TrueNAS version on a row is installable whether or not that exact version ever had its own build. Stable systems only ever receive promoted (hardware verified) builds; preview systems receive the prerelease matching their kernel.
+
+The one line installer below runs the `install.sh` attached to the Latest release. Until the first kernel-keyed build (tag `k<kernel>-...`) is promoted to Latest, that copy is the older installer, which only finds a release built for your exact TrueNAS version. In the meantime, a version without its own build installs with the `install.sh` attached to any `k...` release (see [Installing a Specific Version](docs/install.md#installing-a-specific-version)).
 
 Kernel matching is scoped to your TrueNAS train (25.04, 25.10, 26.0): the sysext also ships userspace (`libhailort`, `hailortcli`) built against that train's base system, so a build from another train is never served even when its kernel matches. A refused cross-train match prints a warning naming the release tag, and the installer exits with the usual no-match error.
 

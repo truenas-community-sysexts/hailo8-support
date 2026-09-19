@@ -24,6 +24,7 @@ KERNEL_MAP = {"trains": {"Goldeye": {
 
 def rows_for(releases, kernel_map=KERNEL_MAP):
     parsed = gsv.parse_releases(releases)
+    gsv.resolve_ktag_kernels(parsed, kernel_map)
     stable, preview = gsv.served_releases(parsed)
     return gsv.build_rows(stable, preview, kernel_map,
                           gsv.kernel_winners(parsed),
@@ -86,6 +87,54 @@ class KernelRows(unittest.TestCase):
         row = [r for r in rows if r["channel"] == "Stable"
                and r["kver"] == "6.12.91-production+truenas"][0]
         self.assertEqual(row["tag"], "")
+
+    def test_promoted_ktag_with_lost_body_fills_its_kernel_row(self):
+        # install.sh serves a promoted k-tagged release by tag even when the
+        # body lost its Target kernel row; the table must say the same
+        # instead of "not built yet". The kernel map recovers the full
+        # kernel string from the tag's short form.
+        rel = dict(release("k6.12.91-hailo4.21.0-r50"), body="")
+        rows = rows_for([rel])
+        row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["tag"], "k6.12.91-hailo4.21.0-r50")
+
+    def test_unpromoted_ktag_with_lost_body_stays_off_the_table(self):
+        # With the body gone an unpromoted k-tag cannot be told apart from a
+        # preview build, so it must not fill the kernel row or its pending
+        # slot (check-kernel-coverage.py applies the same rule).
+        rel = dict(release("k6.12.91-hailo4.21.0-r50", prerelease=True),
+                   body="")
+        rows = rows_for([rel])
+        row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["tag"], "")
+        self.assertEqual(row["pending_tag"], "")
+
+    def test_cross_train_release_does_not_fill_other_trains_kernel_row(self):
+        # install.sh's train guard refuses cross-train matches, so a kernel
+        # row only names releases from its own train.
+        two_train_map = {"trains": {
+            "Fangtooth": {"25.04.9": "6.12.91-production+truenas"},
+            "Goldeye": {"25.10.4": "6.12.91-production+truenas"},
+        }}
+        rows = rows_for([release("v25.10.4-hailo4.21.0-r40", "25.10.4",
+                                 "Goldeye", "6.12.91-production+truenas")],
+                        kernel_map=two_train_map)
+        ft = [r for r in rows if r["versions"] == "25.04.9"][0]
+        gd = [r for r in rows if r["versions"] == "25.10.4"][0]
+        self.assertEqual(gd["tag"], "v25.10.4-hailo4.21.0-r40")
+        self.assertEqual(ft["tag"], "")
+
+    def test_lost_body_ktag_fills_any_trains_row(self):
+        # No header train passes the guard everywhere, same as install.sh.
+        two_train_map = {"trains": {
+            "Fangtooth": {"25.04.9": "6.12.91-production+truenas"},
+            "Goldeye": {"25.10.4": "6.12.91-production+truenas"},
+        }}
+        rel = dict(release("k6.12.91-hailo4.21.0-r50"), body="")
+        rows = rows_for([rel], kernel_map=two_train_map)
+        for versions in ("25.04.9", "25.10.4"):
+            row = [r for r in rows if r["versions"] == versions][0]
+            self.assertEqual(row["tag"], "k6.12.91-hailo4.21.0-r50")
 
     def test_newest_kernel_row_first(self):
         rows = rows_for([])

@@ -65,10 +65,43 @@ class KernelMatch(unittest.TestCase):
         p = run_selection(rels, "25.10.5", "6.12.93-production+truenas")
         self.assertNotEqual(p.returncode, 0)
 
+    def test_stable_box_refuses_ktagged_preview_via_body_header(self):
+        # Kernel-keyed tags carry no BETA marker, so the second lock must
+        # read the notes header instead of the tag.
+        rels = [release("k6.12.93-hailo4.21.0-r44", "26.0.0-RC.1",
+                        kver="6.12.93-production+truenas", prerelease=False)]
+        p = run_selection(rels, "25.10.5", "6.12.93-production+truenas")
+        self.assertNotEqual(p.returncode, 0)
+
     def test_preview_box_gets_prerelease(self):
         p = run_selection(RELEASES, "26.0.0-BETA.2", "6.18.23-production+truenas")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout, "v26.0.0-BETA.2-hailo4.21.0-r38")
+
+    def test_ktag_matches_when_body_row_is_lost(self):
+        # check-releases' coverage gate counts a k-tag as covering its kernel
+        # even when the body lost the Target kernel row; the installer must
+        # agree, or the gate skips builds for a kernel the installer then
+        # refuses to serve.
+        rel = dict(release("k6.12.91-hailo4.21.0-r50", "25.10.4"),
+                   body="")
+        p = run_selection([rel], "25.10.4", "6.12.91-production+truenas")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, "k6.12.91-hailo4.21.0-r50")
+
+    def test_ktag_fallback_never_matches_a_different_short_kernel(self):
+        rel = dict(release("k6.12.9-hailo4.21.0-r50", "25.10.4"), body="")
+        p = run_selection([rel], "25.10.4", "6.12.91-production+truenas")
+        self.assertNotEqual(p.returncode, 0)
+
+    def test_body_row_overrides_ktag_on_mismatch(self):
+        # A mispublished release whose body advertises a different kernel
+        # than its tag must not be served: the body row is written from
+        # REAL_KVER at build time and stays authoritative.
+        rel = release("k6.12.91-hailo4.21.0-r50", "25.10.3",
+                      kver="6.12.33-production+truenas")
+        p = run_selection([rel], "25.10.4", "6.12.91-production+truenas")
+        self.assertNotEqual(p.returncode, 0)
 
     def test_version_fallback_for_legacy_release(self):
         p = run_selection(RELEASES, "25.04.1", "6.12.15-production+truenas")
