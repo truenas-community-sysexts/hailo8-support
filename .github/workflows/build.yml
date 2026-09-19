@@ -1179,6 +1179,8 @@ jobs:
                 "```",
                 `This installs with in-place activation: the image (with the firmware injected) is written to \`/mnt/<pool>/.config/hailo/hailo.raw\` on a data pool and \`/run/extensions/hailo.raw\` links straight to it. Nothing is copied to the boot pool. If the installer asks which pool to use, pick one (or add \`--pool=NAME\`).`,
                 ``,
+                `Reinstalling on the same kernel while \`hailo_pci\` is loaded (for example over an earlier build for this kernel): the installer also prints \`insmod: ERROR: could not insert module ...: File exists\` followed by \`WARNING: insmod hailo_pci failed (device may not be present)\`. That is harmless: the module already loaded stays in use, and this build's module loads at the reboot in step 4.`,
+                ``,
                 `### 3. Verify`,
                 "```bash",
                 ...checks,
