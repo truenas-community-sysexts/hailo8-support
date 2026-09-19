@@ -1,0 +1,230 @@
+name: Promote release on hardware-test sign-off
+
+# When a `hardware-test` issue is closed as completed, promote the prerelease
+# it gates: flip it from prerelease to a full release marked "Latest", and
+# append a changelog (GitHub's PR-based auto-notes + a commit list, since most
+# changes here land as direct pushes that PR-notes miss). The release tag is
+# read from a `<!-- release-tag: vX -->` marker the build writes into the issue
+# body, so this is independent of issue-title formatting.
+#
+# Editing a release does not touch the protected branch, so the default
+# GITHUB_TOKEN (contents: write) is sufficient; no app token needed.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  promote:
+    # Only hardware-test issues closed as "completed" (not "not planned").
+    if: >-
+      contains(github.event.issue.labels.*.name, 'hardware-test') &&
+      github.event.issue.state_reason == 'completed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote the prerelease this issue gates
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const { owner, repo } = context.repo;
+
+            // BEGIN promote-ranking
+            // Canonical preview rule (keep in sync with install.sh's
+            // preview_release and gen-supported-versions.py's is_preview):
+            // preview iff the string contains -BETA or -RC as a substring,
+            // case-insensitive. No \b anchor: a dotless 26.0.0-RC1 must still
+            // classify as preview, matching the installer.
+            const previewVer = (s) => /-(?:BETA|RC)/i.test(s || '');
+            // Fallback for a release whose tag lost its version: the notes
+            // header build.yml always renders ("for TrueNAS SCALE <version>")
+            // names the target.
+            const bodyVerOf = (r) => (((r.body || '').match(/for TrueNAS SCALE (\S+)/) || [])[1] || '');
+            const previewRelease = (r) => previewVer(r.tag_name) || previewVer(bodyVerOf(r));
+
+            // Releases rank by the kernel they target: k-tags encode it
+            // directly, v-tag releases record it in their Target kernel body
+            // row. A release with an unknown kernel (legacy body) ranks below
+            // any known kernel. Two releases on the SAME kernel (a driver
+            // bump rebuilds every kernel, leaving two per kernel) rank by
+            // TrueNAS version when both tags carry one, then by run number
+            // (which also orders k-tags, which carry no version). The run
+            // number alone cannot come first: an older version rebuilt later
+            // has a HIGHER run than the Latest it must not displace. This
+            // keeps the invariant across the tag-scheme migration: promoting
+            // an older build never regresses Latest, whatever scheme the
+            // newer build uses. A k-tag measured against a version-only rank
+            // shares no dimension at all; publication date decides there.
+            const numOf = (s) => {
+              const m = (s || '').match(/^(\d+(?:\.\d+)*)/);
+              return m ? m[1].split('.').map(Number) : null;
+            };
+            const rankOf = (r) => {
+              const t = r.tag_name || '';
+              let kernel = null;
+              const km = t.match(/^k(\d+(?:\.\d+)*)-/);
+              if (km) kernel = km[1].split('.').map(Number);
+              if (!kernel) kernel = numOf(((r.body || '').match(/Target kernel\s*\|\s*`([^`]+)`/) || [])[1]);
+              const vm = t.match(/^v(\d+(?:\.\d+)*)-/);
+              const ver = vm ? vm[1].split('.').map(Number) : null;
+              const rm = t.match(/-r(\d+)$/);
+              const run = rm ? Number(rm[1]) : 0;
+              const date = Date.parse(r.published_at || r.created_at || '') || 0;
+              return (kernel || ver) ? { kernel, ver, run, date } : null;
+            };
+            const cmpNum = (a, b) => {
+              const n = Math.max(a.length, b.length);
+              for (let i = 0; i < n; i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
+              return 0;
+            };
+            const cmpRank = (a, b) => {
+              if (a.kernel && b.kernel) {
+                const dk = cmpNum(a.kernel, b.kernel);
+                if (dk) return dk;
+                if (a.ver && b.ver) {
+                  const dv = cmpNum(a.ver, b.ver);
+                  if (dv) return dv;
+                }
+                return a.run - b.run;
+              }
+              if (a.kernel || b.kernel) {
+                // kernel-only vs version-only shares no dimension: date
+                // decides (see comment above); otherwise known kernel wins.
+                if (!(a.ver && b.ver)) {
+                  const dd = a.date - b.date;
+                  if (dd) return dd;
+                }
+                return a.kernel ? 1 : -1;
+              }
+              return cmpNum(a.ver || [], b.ver || []) || (a.run - b.run);
+            };
+            const decideMakeLatest = (rel, others) => {
+              const thisVer = rankOf(rel);
+              let newest = thisVer;  // rel is becoming non-prerelease
+              for (const r of others) {
+                // Betas / unverified builds can't be Latest. The prerelease
+                // flag alone is not trusted here: a beta mispublished as a
+                // full release would outrank every stable version and wedge
+                // makeLatest=false for all later stable promotions.
+                if (r.prerelease || previewRelease(r)) continue;
+                const v = rankOf(r);
+                if (v && (!newest || cmpRank(v, newest) > 0)) newest = v;
+              }
+              const makeLatest = (thisVer && newest && cmpRank(thisVer, newest) >= 0) ? 'true' : 'false';
+              return { makeLatest, newest };
+            };
+            // END promote-ranking
+
+            const m = (issue.body || '').match(/<!--\s*release-tag:\s*(\S+?)\s*-->/);
+            if (!m) {
+              core.info('No <!-- release-tag --> marker in issue body; nothing to promote.');
+              return;
+            }
+            const tag = m[1];
+
+            // Safety gate: never promote a TrueNAS preview (beta/RC) build to
+            // Latest: that would route stable installs to a beta via
+            // install.sh. Preview builds use the `preview-hardware-test` label
+            // (which this workflow's `if:` already excludes), but guard on the
+            // tag too in case an issue was mislabeled.
+            if (previewVer(tag)) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `ℹ️ \`${tag}\` is a TrueNAS preview (beta/RC) build. Preview builds stay pre-releases and are never promoted to Latest, so no change was made.` });
+              core.info(`Skipping promotion of preview tag ${tag}.`);
+              return;
+            }
+
+            // k-tags carry no BETA marker, so the machine marker build.yml
+            // writes next to release-tag is the reliable preview signal for
+            // kernel-tagged builds (the body check below is prose and could
+            // drift).
+            const pm = (issue.body || '').match(/<!--\s*preview-build:\s*(\S+?)\s*-->/);
+            if (pm && pm[1] === 'true') {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `\`${tag}\` is a TrueNAS preview build (per this issue's preview-build marker). Preview builds stay pre-releases and are never promoted to Latest, so no change was made.` });
+              core.info(`Skipping promotion of preview build ${tag} (issue marker).`);
+              return;
+            }
+
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                  body: `⚠️ No release found for tag \`${tag}\`; nothing to promote.` });
+                return;
+              }
+              throw e;
+            }
+
+            if (!release.prerelease) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `ℹ️ Release [\`${tag}\`](${release.html_url}) is already promoted (not a prerelease). No change.` });
+              return;
+            }
+
+            // k-tags carry no TrueNAS version, so the tag guard above cannot
+            // catch kernel-tagged preview builds. The release body header can:
+            // build.yml always renders "for TrueNAS SCALE <version> (<train>)".
+            const bodyVer = bodyVerOf(release);
+            if (previewVer(bodyVer)) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `This release is a TrueNAS preview (${bodyVer}) build. Preview builds stay pre-releases and are never promoted to Latest, so no change was made.` });
+              core.info(`Skipping promotion of preview build ${tag} (${bodyVer}).`);
+              return;
+            }
+
+            // Previous release (by created_at) bounds the changelog range.
+            // Anchor only to promoted stable releases: an interleaved BETA
+            // tag or unpromoted prerelease would bound the range at the wrong
+            // release and publish an empty or wrong commit list.
+            const rels = (await github.rest.repos.listReleases({ owner, repo, per_page: 100 })).data
+              .filter(r => r.id !== release.id && !r.draft)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const prev = rels.find(r => !r.prerelease && !previewRelease(r) &&
+              new Date(r.created_at) <= new Date(release.created_at));
+
+            // GitHub's PR-based auto-notes.
+            let prNotes = '';
+            try {
+              const gen = await github.rest.repos.generateReleaseNotes({ owner, repo, tag_name: tag,
+                ...(prev ? { previous_tag_name: prev.tag_name } : {}) });
+              prNotes = (gen.data.body || '').trim();
+            } catch (e) { core.warning(`generate-notes failed: ${e.message}`); }
+
+            // Commit list: captures the direct/app pushes PR-notes don't.
+            let commits = '';
+            if (prev) {
+              try {
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({ owner, repo,
+                  basehead: `${prev.tag_name}...${tag}` });
+                commits = (cmp.data.commits || [])
+                  .map(c => `- ${c.commit.message.split('\n')[0]} (\`${c.sha.slice(0, 7)}\`)`)
+                  .join('\n');
+              } catch (e) { core.warning(`compare failed: ${e.message}`); }
+            }
+
+            let changelog = '\n\n## Changelog\n';
+            if (prNotes) changelog += `\n${prNotes}\n`;
+            if (commits) changelog += `\n### Commits\n${commits}\n`;
+            if (!prNotes && !commits) changelog += '\n_Initial release._\n';
+
+            // Newest-stable decision: rationale sits with decideMakeLatest
+            // above. rels = all other non-draft releases.
+            const { makeLatest, newest } = decideMakeLatest(release, rels);
+
+            await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
+              prerelease: false, make_latest: makeLatest,
+              body: (release.body || '') + changelog });
+
+            const latestNote = makeLatest === 'true'
+              ? 'and set it as the latest release'
+              : `as a full release (Latest stays on the newer \`${newest ? (newest.kernel ? 'kernel ' + newest.kernel.join('.') : newest.ver.join('.')) : ''}\`)`;
+            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+              body: `✅ Verified: promoted [\`${tag}\`](${release.html_url}) ${latestNote}, and appended the changelog.` });
+            core.info(`Promoted ${tag} (make_latest=${makeLatest}).`);

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project builds a systemd-sysext package (`hailo.raw`) containing the Hailo-8 AI accelerator driver for TrueNAS SCALE. The sysext is a squashfs image that overlays `/usr/` via overlayfs when activated with `systemd-sysext refresh`.
+This project builds a systemd-sysext package (`hailo.raw`) containing the Hailo-8 AI accelerator driver for TrueNAS. The sysext is a squashfs image that overlays `/usr/` via overlayfs when activated with `systemd-sysext refresh`.
 
 **Important:** Hailo-8 firmware (`hailo8_fw.bin`) is proprietary and governed by Hailo's EULA, which prohibits redistribution. This project does **not** distribute firmware. Instead, the install script downloads firmware directly from Hailo's servers at install time and injects it into the sysext squashfs before activation.
 
@@ -310,7 +310,7 @@ This is critical because a new TrueNAS release may ship a different kernel, requ
 
 ### HailoRT half
 
-Enumerates tags reachable from `hailort-drivers`'s `hailo8` branch (not `master`, which tracks Hailo-10/15), capped at the version pinned in Frigate's `docker/main/install_hailort.sh` on `dev`. The cap is the gate: HailoRT enforces exact-match between kernel driver and userspace library, and Frigate is the consumer the sysext exists to serve. Updates `hailo.driver` in `tracked-versions.json`.
+Enumerates tags reachable from `hailort-drivers`'s `hailo8` branch (not `master`, which tracks Hailo-10/15), capped at the HailoRT version Frigate pins on `dev`: `HAILORT_VERSION` in `frigate/detectors/plugins/hailo.py`, cross-checked against `hailo_version` in `docker/hailo8l/user_installation.sh` (a disagreement refuses the bump). The cap is the gate: HailoRT enforces exact-match between kernel driver and userspace library, and Frigate is the consumer the sysext exists to serve. Updates `hailo.driver` in `tracked-versions.json`.
 
 ### Consolidated commit and dispatch
 

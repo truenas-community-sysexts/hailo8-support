@@ -20,13 +20,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      # Mint a short-lived token from sysext-ci-automation-app (in the
+      # default-branch ruleset bypass list) to push tracked-versions.json back
+      # to main; the default GITHUB_TOKEN's github-actions[bot] is not exempt.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
         with:
-          # PAT (admin actor) is required to push tracked-versions.json back
-          # to main — the default GITHUB_TOKEN runs as github-actions[bot],
-          # which the default-branch ruleset does not bypass.
-          token: ${{ secrets.CHECK_BUILDS }}
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
       # ─────────────────────────────────────────────────────────────────────
       # Read current tracked state.
@@ -41,6 +48,10 @@ jobs:
               s = json.load(f)
           print(f"truenas_version={s['truenas']['version']}")
           print(f"train={s['truenas']['train']}")
+          print(f"preview_version={s['truenas_preview']['version']}")
+          print(f"preview_train={s['truenas_preview']['train']}")
+          print(f"preview_runner={s['truenas_preview']['runner']}")
+          print(f"preview_channel_url={s['truenas_preview']['channel_url']}")
           print(f"hailo_driver={s['hailo']['driver']}")
           PY
 
@@ -56,7 +67,8 @@ jobs:
           CURRENT_VERSION: ${{ steps.tracked.outputs.truenas_version }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
           # Public scale-build tag listing — default GITHUB_TOKEN's 5000/hr
-          # quota is plenty. CHECK_BUILDS PAT is reserved for the push to main.
+          # quota is plenty for these read-only API calls; the app token is
+          # used only for the push to main and the build dispatch.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
@@ -187,9 +199,165 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # ─────────────────────────────────────────────────────────────────────
+      # Kernel coverage gate: the sysext binds to the kernel, not the TrueNAS
+      # version string, and point releases usually reuse the previous kernel.
+      # Resolve the new version's kernel from its rootfs.mtree manifest (small
+      # text fetch, no ISO); if a release for (kernel, current driver) already
+      # exists, no build is needed; only a PROMOTED one lets the tracked
+      # version advance (see check-kernel-coverage.py). Coverage only counts
+      # once the Latest release is kernel-keyed: the one-line installer runs
+      # Latest's install.sh, and a pre-migration one matches exact versions
+      # only. An unresolvable kernel or Latest falls through to "build", the
+      # safe default.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Resolve kernel and check coverage
+        id: kernel
+        if: steps.truenas.outputs.changed == 'true'
+        env:
+          NEW_VERSION: ${{ steps.truenas.outputs.version }}
+          NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          CURRENT_DRIVER: ${{ steps.tracked.outputs.hailo_driver }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          MTREE_URL="https://download.truenas.com/TrueNAS-SCALE-${NEW_TRAIN}/${NEW_VERSION}/rootfs.mtree"
+          NEW_KERNEL=$(curl -fsSL "$MTREE_URL" 2>/dev/null \
+            | grep -oE 'usr/lib/modules/[0-9][^/ ]*production[^/ ]*' \
+            | head -1 | sed 's#usr/lib/modules/##') || true
+
+          if [ -z "$NEW_KERNEL" ]; then
+            echo "Kernel for ${NEW_VERSION} not resolvable (no rootfs.mtree yet); building."
+            echo "covered=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
+          export NEW_KERNEL
+
+          # Rollout guard input. A failed lookup leaves LATEST_TAG empty,
+          # which the coverage script treats as not kernel-keyed (build).
+          LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null) || LATEST_TAG=""
+          echo "Latest release: ${LATEST_TAG:-(lookup failed)}"
+          export LATEST_TAG
+
+          # A transient API or parse failure must not fail the daily check:
+          # the safe default is covered=false (build it).
+          COVERAGE=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 .github/scripts/check-kernel-coverage.py) || COVERAGE=""
+
+          case "$COVERAGE" in
+            promoted\ *)
+              COVERING_TAG="${COVERAGE#promoted }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by promoted release ${COVERING_TAG}; the installer serves this version by kernel match. Tracked versions still update."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              ;;
+            pending\ *)
+              COVERING_TAG="${COVERAGE#pending }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; unpromoted build ${COVERING_TAG} is awaiting hardware-test promotion. No duplicate build is dispatched, and the tracked version does not advance until that release is promoted."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              echo "covered_pending=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "No release the one-line installer can serve covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
+              echo "covered=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # ─────────────────────────────────────────────────────────────────────
+      # TrueNAS preview (beta) check: TrueNAS 26 betas are not published to
+      # scale-build tags or download.truenas.com and ship no GITMANIFEST. They
+      # live under a browsable channel (iso.sys.truenas.net/TrueNAS-26-BETA/).
+      # Scrape that listing for the highest X.Y[.Z]-BETA.N / -RC.N, gate on the
+      # ISO actually being uploaded, and bump truenas_preview.version. The
+      # runner is pinned in tracked-versions.json (no GITMANIFEST to resolve
+      # from); build.yml downloads the ISO via an iso_url override.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Check for new TrueNAS preview release
+        id: preview
+        env:
+          CURRENT_PREVIEW: ${{ steps.tracked.outputs.preview_version }}
+          CHANNEL_URL: ${{ steps.tracked.outputs.preview_channel_url }}
+        run: |
+          set -o pipefail
+          echo "Currently tracked preview: ${CURRENT_PREVIEW} (channel ${CHANNEL_URL})"
+
+          if ! LISTING=$(curl -fsSL "$CHANNEL_URL"); then
+            echo "Preview channel listing not reachable at ${CHANNEL_URL}. Skipping preview check this run."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Order beta/RC versions: numeric base first (26.0.0), then channel
+          # rank (BETA < RC), then the pre-release number. Shared by the
+          # "highest in listing" and "is it actually higher" comparisons.
+          read -r -d '' PREVIEW_SORT_PY <<'PY' || true
+          import sys
+          def key(v):
+              base, _, pre = v.partition('-')
+              bp = [int(x) for x in base.split('.')]
+              bp += [0] * (3 - len(bp))
+              typ, _, num = pre.partition('.')
+              # Same ranking as gen-supported-versions.py's truenas_sort_key:
+              # a final release sorts above its BETA/RC.
+              rank = 3 if not pre else {'BETA': 0, 'RC': 1}.get(typ.upper(), 2)
+              return (bp, rank, int(num) if num.isdigit() else 0)
+          vers = [l.strip() for l in sys.stdin if l.strip()]
+          if vers:
+              print(sorted(vers, key=key)[-1])
+          PY
+
+          # Hrefs look like ./26.0.0-BETA.2/?wrap=1 -- extract version dirs.
+          # Match the whole ./VERSION/ href segment so a suffix of a longer
+          # version (26.0.0.1-BETA.1) cannot be extracted on its own, and
+          # allow up to 4 numeric components, the same shape
+          # validate-tracked-versions.sh accepts.
+          # || true: zero matches exits grep 1, and pipefail + errexit would
+          # otherwise kill the whole job here (empty channel after a GA).
+          LATEST_PREVIEW=$(printf '%s' "$LISTING" \
+            | grep -oE '\./[0-9]+(\.[0-9]+){1,3}-(BETA|RC)\.[0-9]+/' \
+            | sed -E 's|^\./([^/]+)/$|\1|' \
+            | sort -u \
+            | python3 -c "$PREVIEW_SORT_PY") || true
+
+          if [ -z "$LATEST_PREVIEW" ]; then
+            echo "No beta/RC versions found in channel listing. Skipping preview check."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Latest preview in channel: ${LATEST_PREVIEW}"
+
+          if [ "$LATEST_PREVIEW" = "$CURRENT_PREVIEW" ]; then
+            echo "No new TrueNAS preview release"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Only advance forward (guard against listing churn / dir deletion).
+          HIGHER=$(printf '%s\n%s\n' "$CURRENT_PREVIEW" "$LATEST_PREVIEW" | python3 -c "$PREVIEW_SORT_PY")
+          if [ "$HIGHER" != "$LATEST_PREVIEW" ]; then
+            echo "Latest preview ${LATEST_PREVIEW} is not higher than tracked ${CURRENT_PREVIEW} — ignoring"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ISO-file gate: the version dir can exist before the ISO finishes
+          # uploading. HEAD-check the actual file URL.
+          ISO_URL="${CHANNEL_URL}${LATEST_PREVIEW}/TrueNAS-${LATEST_PREVIEW}.iso"
+          if ! curl -fsI "$ISO_URL" >/dev/null 2>&1; then
+            echo "Preview ISO not yet published at ${ISO_URL}. Will retry on next scheduled run."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New TrueNAS preview release detected, ISO is published."
+          {
+            echo "changed=true"
+            echo "version=${LATEST_PREVIEW}"
+          } >> "$GITHUB_OUTPUT"
+
+      # ─────────────────────────────────────────────────────────────────────
       # Hailo check: enumerate tags reachable from hailort-drivers' hailo8
       # branch (master tracks 5.x for Hailo-10/15 — does not support Hailo-8),
-      # then cap at the version pinned in Frigate's install scripts on dev.
+      # then cap at the HailoRT version Frigate pins on dev.
       # The cap is the gate; HailoRT enforces exact-match between kernel
       # driver and userspace library, and Frigate is the consumer the sysext
       # exists to serve.
@@ -225,10 +393,14 @@ jobs:
           # Parse defensively. Soft failures here are dangerous: if we silently
           # pick the wrong version, the next bump can ship a sysext that breaks
           # users on reboot. Both Frigate pin sources must agree, and the
-          # value must be a clean X.Y.Z release.
+          # value must be a clean X.Y.Z release. The two sources name the pin
+          # differently: the hailo detector plugin (HAILORT_VERSION, the
+          # HailoRT Frigate installs at first start) and the Hailo-8L host
+          # install script (hailo_version).
           parse_frigate_pin() {
             local url="$1"
             local label="$2"
+            local var="$3"
             local content line value count
             if ! content=$(curl -fsSL "$url"); then
               echo "::error title=Frigate pin parser::curl failed fetching ${label} (${url})"
@@ -236,25 +408,27 @@ jobs:
               return 1
             fi
             line=$(printf '%s\n' "$content" \
-              | grep -E '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=' \
+              | grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?${var}[[:space:]]*=" \
               || true)
             if [ -z "$line" ]; then
-              echo "::error title=Frigate pin parser::${label} contains no hailo_version assignment"
-              echo "ERROR: ${label} contains no hailo_version assignment" >&2
+              echo "::error title=Frigate pin parser::${label} contains no ${var} assignment"
+              echo "ERROR: ${label} contains no ${var} assignment" >&2
               return 1
             fi
             count=$(printf '%s\n' "$line" | wc -l | tr -d ' ')
             if [ "$count" -ne 1 ]; then
-              echo "::error title=Frigate pin parser::${label} has ${count} active hailo_version assignments (expected 1)"
-              echo "ERROR: ${label} has ${count} hailo_version assignments (expected 1):" >&2
+              echo "::error title=Frigate pin parser::${label} has ${count} active ${var} assignments (expected 1)"
+              echo "ERROR: ${label} has ${count} ${var} assignments (expected 1):" >&2
               printf '%s\n' "$line" >&2
               return 1
             fi
+            # The grep above pinned the line to "<var> = <value>", so the
+            # value is whatever follows the first "=", unquoted.
             value=$(printf '%s\n' "$line" \
-              | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?hailo_version[[:space:]]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\2/')
+              | sed -E 's/^[^=]*=[[:space:]]*["'"'"']?([^"'"'"' #]+)["'"'"']?.*$/\1/')
             if ! printf '%s' "$value" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "::error title=Frigate pin parser::${label} hailo_version is not a clean X.Y.Z release: '${value}'"
-              echo "ERROR: ${label} hailo_version is not a clean X.Y.Z release: '${value}'" >&2
+              echo "::error title=Frigate pin parser::${label} ${var} is not a clean X.Y.Z release: '${value}'"
+              echo "ERROR: ${label} ${var} is not a clean X.Y.Z release: '${value}'" >&2
               echo "  raw line: ${line}" >&2
               return 1
             fi
@@ -262,24 +436,27 @@ jobs:
             printf '%s' "$value"
           }
 
-          if ! FRIGATE_MAIN_PIN=$(parse_frigate_pin \
-              "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/docker/main/install_hailort.sh" \
-              "frigate dev docker/main/install_hailort.sh"); then
-            echo "::error title=Frigate pin parser::failed to parse docker/main/install_hailort.sh — refusing to bump"
+          # Frigate dropped docker/main/install_hailort.sh when it moved to
+          # installing HailoRT at first start; the plugin constant is now the
+          # canonical pin.
+          if ! FRIGATE_PLUGIN_PIN=$(parse_frigate_pin \
+              "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/frigate/detectors/plugins/hailo.py" \
+              "frigate dev frigate/detectors/plugins/hailo.py" HAILORT_VERSION); then
+            echo "::error title=Frigate pin parser::failed to parse HAILORT_VERSION from frigate/detectors/plugins/hailo.py; refusing to bump"
             exit 1
           fi
           if ! FRIGATE_HAILO8L_PIN=$(parse_frigate_pin \
               "https://raw.githubusercontent.com/blakeblackshear/frigate/dev/docker/hailo8l/user_installation.sh" \
-              "frigate dev docker/hailo8l/user_installation.sh"); then
-            echo "::error title=Frigate pin parser::failed to parse docker/hailo8l/user_installation.sh — refusing to bump"
+              "frigate dev docker/hailo8l/user_installation.sh" hailo_version); then
+            echo "::error title=Frigate pin parser::failed to parse hailo_version from docker/hailo8l/user_installation.sh; refusing to bump"
             exit 1
           fi
 
-          if [ "$FRIGATE_MAIN_PIN" != "$FRIGATE_HAILO8L_PIN" ]; then
-            echo "::error title=Frigate pins disagree::install_hailort.sh=${FRIGATE_MAIN_PIN}, user_installation.sh=${FRIGATE_HAILO8L_PIN} — refusing to guess which is canonical"
+          if [ "$FRIGATE_PLUGIN_PIN" != "$FRIGATE_HAILO8L_PIN" ]; then
+            echo "::error title=Frigate pins disagree::hailo.py HAILORT_VERSION=${FRIGATE_PLUGIN_PIN}, user_installation.sh hailo_version=${FRIGATE_HAILO8L_PIN}; refusing to guess which is canonical"
             exit 1
           fi
-          FRIGATE_PIN="$FRIGATE_MAIN_PIN"
+          FRIGATE_PIN="$FRIGATE_PLUGIN_PIN"
           echo "Frigate pinned version: ${FRIGATE_PIN}"
 
           if [ -z "$LATEST" ]; then
@@ -323,9 +500,15 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       - name: Resolve build runner
         id: runner
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.hailo.outputs.changed == 'true'
+        env:
+          # Same composite as TRUENAS_CHANGED: under covered_pending the
+          # dispatch builds the tracked version, so resolve its runner.
+          TRUENAS_EFFECTIVE: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
         run: |
-          if [ "${{ steps.truenas.outputs.changed }}" = "true" ]; then
+          if [ "$TRUENAS_EFFECTIVE" = "true" ]; then
             TRAIN="${{ steps.truenas.outputs.train }}"
             VERSION="${{ steps.truenas.outputs.version }}"
           else
@@ -341,13 +524,20 @@ jobs:
       # workflow file changes are needed. Commit message reflects the
       # combination so `git log` is self-explanatory.
       # ─────────────────────────────────────────────────────────────────────
+      # covered_pending holds the stable version back (see the coverage step);
+      # the composite TRUENAS_CHANGED keeps write, message, and condition agreed.
       - name: Update tracked-versions
         id: write
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true') ||
+          steps.preview.outputs.changed == 'true' ||
+          steps.hailo.outputs.changed == 'true'
         env:
-          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
+          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          PREVIEW_CHANGED: ${{ steps.preview.outputs.changed }}
+          NEW_PREVIEW_VERSION: ${{ steps.preview.outputs.version }}
           HAILO_CHANGED: ${{ steps.hailo.outputs.changed }}
           NEW_HAILO_DRIVER: ${{ steps.hailo.outputs.driver }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
@@ -365,6 +555,8 @@ jobs:
           if os.environ['TRUENAS_CHANGED'] == 'true':
               s['truenas']['version'] = os.environ['NEW_TRUENAS_VERSION']
               s['truenas']['train']   = os.environ['NEW_TRAIN']
+          if os.environ['PREVIEW_CHANGED'] == 'true':
+              s['truenas_preview']['version'] = os.environ['NEW_PREVIEW_VERSION']
           if os.environ['HAILO_CHANGED'] == 'true':
               s['hailo']['driver']    = os.environ['NEW_HAILO_DRIVER']
           with open('.github/tracked-versions.json', 'w') as f:
@@ -386,22 +578,23 @@ jobs:
             FINAL_HAILO_DRIVER="${{ steps.tracked.outputs.hailo_driver }}"
           fi
 
-          # Compose a commit message that names what moved.
-          if [ "$TRUENAS_CHANGED" = "true" ] && [ "$HAILO_CHANGED" = "true" ]; then
+          # Compose a commit message that names whatever moved.
+          PARTS=()
+          if [ "$TRUENAS_CHANGED" = "true" ]; then
             if [ "$NEW_TRAIN" != "$CURRENT_TRAIN" ]; then
-              MSG="Update tracked versions: TrueNAS ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN}), HailoRT ${NEW_HAILO_DRIVER}"
+              PARTS+=("TrueNAS ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN})")
             else
-              MSG="Update tracked versions: TrueNAS ${NEW_TRUENAS_VERSION}, HailoRT ${NEW_HAILO_DRIVER}"
+              PARTS+=("TrueNAS ${NEW_TRUENAS_VERSION}")
             fi
-          elif [ "$TRUENAS_CHANGED" = "true" ]; then
-            if [ "$NEW_TRAIN" != "$CURRENT_TRAIN" ]; then
-              MSG="Update tracked TrueNAS version to ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN})"
-            else
-              MSG="Update tracked TrueNAS version to ${NEW_TRUENAS_VERSION}"
-            fi
-          else
-            MSG="Update tracked HailoRT driver version to ${NEW_HAILO_DRIVER}"
           fi
+          if [ "$PREVIEW_CHANGED" = "true" ]; then
+            PARTS+=("TrueNAS preview ${NEW_PREVIEW_VERSION}")
+          fi
+          if [ "$HAILO_CHANGED" = "true" ]; then
+            PARTS+=("HailoRT ${NEW_HAILO_DRIVER}")
+          fi
+          JOINED=$(printf '%s, ' "${PARTS[@]}")
+          MSG="Update tracked versions: ${JOINED%, }"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -430,15 +623,39 @@ jobs:
             echo "hailo_driver=${FINAL_HAILO_DRIVER}"
           } >> "$GITHUB_OUTPUT"
 
+          # Preview dispatch values (post-write). The ISO URL is derived from
+          # channel_url + version so the dispatch can hand build.yml a
+          # ready-to-use iso_url override.
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          with open('.github/tracked-versions.json') as f:
+              s = json.load(f)
+          pv = s['truenas_preview']
+          ver = pv['version']
+          print(f"preview_version={ver}")
+          print(f"preview_train={pv['train']}")
+          print(f"preview_runner={pv['runner']}")
+          print(f"preview_iso_url={pv['channel_url']}{ver}/TrueNAS-{ver}.iso")
+          PY
+
       # ─────────────────────────────────────────────────────────────────────
-      # Single dispatch with the post-update combo. mark_latest='false' is
-      # the gate that prevents an unverified auto-build from displacing the
-      # human-promoted Latest release.
+      # Dispatch build.yml. Two independent targets share the current driver:
+      #   - stable: built when TrueNAS stable or the HailoRT driver moved.
+      #   - preview: built when the TrueNAS beta or the driver moved.
+      # So a driver bump produces BOTH a 25.x and a 26-beta build ("each
+      # release has both"); a TrueNAS-only bump on one channel builds only that
+      # channel. mark_latest='false' on both keeps unverified auto-builds out of
+      # /releases/latest; preview builds additionally never promote (build.yml
+      # gives them the preview-hardware-test label and promote.yml refuses
+      # beta/RC tags).
       # ─────────────────────────────────────────────────────────────────────
-      - name: Trigger build
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+      - name: Trigger stable build
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.hailo.outputs.changed == 'true'
         uses: actions/github-script@v9
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -453,4 +670,26 @@ jobs:
                 mark_latest:          'false'
               }
             });
-            console.log('Dispatched build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.runner.outputs.runner }}');
+            console.log('Dispatched stable build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.runner.outputs.runner }}');
+
+      - name: Trigger preview build
+        if: steps.preview.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build.yml',
+              ref: 'main',
+              inputs: {
+                truenas_version:      '${{ steps.write.outputs.preview_version }}',
+                hailo_driver_version: '${{ steps.write.outputs.hailo_driver }}',
+                train_name:           '${{ steps.write.outputs.preview_train }}',
+                runner:               '${{ steps.write.outputs.preview_runner }}',
+                iso_url:              '${{ steps.write.outputs.preview_iso_url }}',
+                mark_latest:          'false'
+              }
+            });
+            console.log('Dispatched preview build.yml: TrueNAS ${{ steps.write.outputs.preview_version }} (${{ steps.write.outputs.preview_train }}), HailoRT ${{ steps.write.outputs.hailo_driver }}, runner ${{ steps.write.outputs.preview_runner }}, iso_url ${{ steps.write.outputs.preview_iso_url }}');

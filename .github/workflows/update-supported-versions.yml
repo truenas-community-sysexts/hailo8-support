@@ -1,0 +1,95 @@
+name: Update supported-versions table
+
+# Keep the "Supported TrueNAS versions" table in README.md in sync with the
+# repo's actual published releases, and .github/kernel-map.json in sync with
+# TrueNAS's published rootfs.mtree manifests. Triggered on every release change
+# (publish, edit, promote, delete, ...) so adds AND deletions are reflected
+# within moments, plus a daily safety net in case an event is ever missed. The
+# table is regenerated from the live Releases API and the kernel map, so it
+# can never drift from what is actually installable.
+
+on:
+  # Bot-published / promoted releases: build.yml and promote.yml act with the
+  # default GITHUB_TOKEN, so the `release` event below is suppressed for them
+  # (GitHub's recursion guard). workflow_run fires regardless of token, so it
+  # catches new auto-builds and promotions promptly.
+  workflow_run:
+    workflows: ["Build Hailo Sysext", "Promote release on hardware-test sign-off"]
+    types: [completed]
+  # Human / UI release actions fire these immediately. `released` stays: a
+  # manual UI promotion (unchecking pre-release) fires only that type.
+  # `prereleased` is dropped as a pure duplicate of `published`.
+  release:
+    types: [published, unpublished, edited, deleted, released]
+  schedule:
+    - cron: '17 6 * * *'  # daily safety net, offset from check-releases (06:00 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialise: a burst of release events (draft -> publish -> promote) must not
+# race on the commit/push of README.md.
+concurrency:
+  group: update-supported-versions
+  cancel-in-progress: false
+
+jobs:
+  update:
+    # Runs on every workflow_run completion, failed or cancelled included: a
+    # build can publish its release and then fail a later step, and the
+    # token-raised release event cannot re-trigger this workflow. The commit
+    # step no-ops when nothing actually changed.
+    runs-on: ubuntu-latest
+    steps:
+      # Mint a short-lived token from the CI app (in the default-branch ruleset
+      # bypass list) to push README.md back to main; github-actions[bot] is not
+      # exempt. Same pattern as check-releases.yml.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Update kernel map
+        run: python3 .github/scripts/gen-kernel-map.py .github/kernel-map.json
+
+      - name: Regenerate table from releases
+        env:
+          # Read-only release listing; the default token's quota is plenty.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          # --paginate: install.sh paginates too, and the table must cover
+          # every release the installer can serve.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 .github/scripts/gen-supported-versions.py README.md .github/kernel-map.json
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- README.md .github/kernel-map.json; then
+            echo "supported-versions table and kernel map already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md .github/kernel-map.json
+          git commit -m "docs: refresh supported-versions table and kernel map"
+          # Retry once on push rejection if main moved between checkout and now.
+          if ! git push; then
+            echo "Push failed, attempting rebase and retry..."
+            git pull --rebase || {
+              echo "::error title=Push failed::git pull --rebase failed after push rejection"
+              exit 1
+            }
+            git push || {
+              echo "::error title=Push failed::git push failed after rebase retry"
+              exit 1
+            }
+          fi
