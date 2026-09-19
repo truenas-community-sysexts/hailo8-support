@@ -171,6 +171,22 @@ class Commands(unittest.TestCase):
         self.assertIn("Kernel version mismatch",
                       (ROOT / "scripts" / "hailo-preinit.sh").read_text())
 
+    def test_install_step_explains_same_kernel_insmod_warning(self):
+        # Reinstalling on the running kernel with hailo_pci loaded: insmod
+        # refuses it (File exists) and install.sh warns, harmlessly. The
+        # WARNING line quoted must be what install.sh prints.
+        text = INSTALL_SH.read_text()
+        for params in (STABLE, PREVIEW):
+            body = render_issue(**params)["body"]
+            step2 = body[body.index("### 2. Install this build"):body.index("### 3. Verify")]
+            self.assertIn("Reinstalling on the same kernel while `hailo_pci` is loaded", step2)
+            self.assertIn("could not insert module ...: File exists", step2)
+            self.assertIn("this build's module loads at the reboot in step 4", step2)
+            quoted = re.findall(r"`(WARNING: [^`]+)`", step2)
+            self.assertEqual(len(quoted), 1, step2)
+            for q in quoted:
+                self.assertIn(q, text)
+
     def test_sign_off_matches_the_channel(self):
         self.assertIn("promotes", render_issue(**STABLE)["body"])
         preview = render_issue(**PREVIEW)["body"]
