@@ -6,19 +6,26 @@ Reads the repo's releases on stdin (gh api --paginate: one JSON array per
 page, concatenated) and reports what covers the kernel in $NEW_KERNEL for
 the driver in $CURRENT_DRIVER, scoped to $NEW_VERSION's TrueNAS train:
 
-    promoted <tag>   served by install.sh's stable channel: no build needed,
-                     the tracked version may advance.
-    pending <tag>    unpromoted stable build awaiting hardware test: no
-                     duplicate build, but the tracked version must NOT
-                     advance (that consumes the one-shot version-changed
-                     event, so deleting the build after a failed hardware
-                     test would leave the kernel with no rebuild path).
+    promoted <tag>   approved for $NEW_VERSION's train, so install.sh's
+                     stable channel serves it: no build needed, the tracked
+                     version may advance.
+    pending <tag>    stable build not approved for that train yet, awaiting
+                     its hardware test: no duplicate build, but the tracked
+                     version must NOT advance (that consumes the one-shot
+                     version-changed event, so deleting the build after a
+                     failed hardware test would leave the kernel with no
+                     rebuild path).
     (nothing)        no coverage: build.
 
-Preview (BETA/RC) builds never count: they never promote, so the stable
-channel never serves them. A k-tag whose body lost the Target kernel row
-counts only once promoted: unpromoted, it cannot be told apart from a
-preview build, and the safe default is to build.
+"Approved" is the installer's rule: the notes carry a verified-train line
+for the train (promote.yml writes it on sign-off, in the same update that
+promotes a stable build), or the release is a full release with no such
+line at all (promoted before per-train sign-off, grandfathered). Preview
+(BETA/RC) builds never count: the stable channel never serves them. A k-tag
+whose body lost the Target kernel row counts only once approved: without a
+body it has no verified-train line, so only a promoted one qualifies;
+unpromoted, it cannot be told apart from a preview build, and the safe
+default is to build.
 
 Rollout guard: coverage is only reported while the Latest release is
 kernel-keyed ($LATEST_TAG starts with "k"). The one-line installer runs the
@@ -60,8 +67,27 @@ def main():
     hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
     pre_re = re.compile(r'-(BETA|RC)', re.IGNORECASE)
 
+    # Same rule as install.sh's train_key and truenas_train_key: the major
+    # version from 26 on (every 26.x release, betas included, is one train),
+    # major.minor before that.
     def train_key(v):
-        return '.'.join(v.partition('-')[0].split('.')[:2])
+        major, dot, rest = v.partition('.')
+        if not major.isdigit():
+            return ''
+        if int(major) >= 26:
+            return major
+        minor = re.match(r'[0-9]*', rest).group(0)
+        return major + '.' + minor if dot and minor else ''
+
+    train = train_key(version)
+    vt_re = re.compile(r'^[ \t]*<!--\s*verified-train:\s*([^\s>]+?)\s*-->', re.M)
+
+    # Mirror install.sh's approval gate (preview builds are skipped below).
+    def approved(r, body):
+        trains = set(vt_re.findall(body))
+        if trains:
+            return train in trains
+        return not r.get('prerelease')
 
     found = None
     pending = None
@@ -83,12 +109,12 @@ def main():
             continue
         m = ker_re.search(body)
         tk = m.group(1) if m else ''
-        promoted = not r.get('prerelease')
-        # Body row is the primary key; the k-tag fallback needs promoted
+        ok = approved(r, body)
+        # Body row is the primary key; the k-tag fallback needs approval
         # (see module docstring).
-        if tk == kver or (not tk and promoted
+        if tk == kver or (not tk and ok
                           and tag.startswith(f'k{short}-hailo')):
-            if promoted:
+            if ok:
                 found = ('promoted', tag)
                 break
             if pending is None:

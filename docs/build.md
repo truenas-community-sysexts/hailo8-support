@@ -35,7 +35,16 @@ A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitor
 - **TrueNAS preview half**: tracks the latest TrueNAS 26 beta (`truenas_preview.version`, e.g. `26.0.0-BETA.2`). TrueNAS 26 betas are not tagged in `scale-build` and ship no GITMANIFEST, so this half scrapes the browsable channel listing in `truenas_preview.channel_url` (`iso.sys.truenas.net/TrueNAS-26-BETA/`), picks the highest `X.Y.Z-BETA.N` / `-RC.N`, and gates on the ISO being uploaded. The runner is pinned (`truenas_preview.runner`, `ubuntu-24.04`) since there is no GITMANIFEST to auto-resolve from, and the build downloads the ISO via an `iso_url` override.
 - **HailoRT half**: looks for new tags reachable from `hailort-drivers`'s `hailo8` branch, capped at the HailoRT version Frigate pins on `dev` (`HAILORT_VERSION` in `frigate/detectors/plugins/hailo.py`, which must agree with `hailo_version` in `docker/hailo8l/user_installation.sh`). When the cap allows, it stages a bump of `hailo.driver`.
 
-If anything moved, the workflow writes the file in one commit and dispatches builds. A **HailoRT bump builds both** the stable (25.x) and preview (26-beta) targets, so each driver release ships both; a TrueNAS-only bump on one channel builds just that channel. All auto-builds publish without the "Latest" badge. Stable builds: verify on Hailo-8 hardware, then close the `hardware-test` issue to promote to Latest. **Preview (26-beta) builds stay pre-releases permanently and are never promoted to Latest** (they carry the `preview-hardware-test` label, which `promote.yml` ignores) so stable installs are unaffected; install them explicitly by tag.
+If anything moved, the workflow writes the file in one commit and dispatches builds. A **HailoRT bump builds both** the stable (25.x) and preview (26-beta) targets, so each driver release ships both; a TrueNAS-only bump on one channel builds just that channel. Every build publishes as a pre-release with a hardware-test issue, and nothing installs it until that test signs it off (see [Per-train sign-off](#per-train-sign-off)). **Preview (26-beta) builds stay pre-releases permanently and are never promoted to Latest** (they carry the `preview-hardware-test` label); their sign-off approves them for train 26 only, so stable installs are unaffected.
+
+## Per-train sign-off
+
+A hardware test on a TrueNAS train approves a build for that train's systems only. The **train** is the major version from 26 on (every 26.x release, betas included, is train `26`) and major.minor before that (`25.10`).
+
+- `build.yml` publishes every build as a **pre-release** and opens its hardware-test issue: `hardware-test` for a stable build, `preview-hardware-test` for a preview one. There is no option to publish straight to Latest: a full release without a `verified-train` marker counts as approved for every train (the grandfather rule below), so it would reach every system untested.
+- Closing the issue as **completed** runs `promote.yml`. It reads the build's train from the release notes header (`for TrueNAS SCALE <version>`) and appends `<!-- verified-train: <train> -->` to the release notes, once. A stable build is promoted in the same update: flipped to a full release, the changelog appended, and marked Latest when it outranks the current Latest (by kernel, then TrueNAS version, then run number). A preview build only gets the marker and stays a pre-release. Closing as **not planned** changes nothing.
+- `get.sh` and `install.sh` install a build on a train only when its notes carry that train's marker, or when it is a full release with no marker at all (promoted before per-train sign-off, 2026-09-19, and grandfathered). There is no fallback to an unverified build, on stable or preview systems. Preview builds signed off before that date are pre-releases, so the grandfather rule does not cover them; they get a one-time `verified-train: 26` marker by hand.
+- The kernel stays the primary key: an approved build installs only on the exact kernel it targets, from its own train. GitHub's "Latest" flag no longer selects anything for `get.sh`; the older `releases/latest/download/install.sh` one-liner still runs the Latest release's installer, which applies the same rule once it is a release from this change on.
 
 ## Kernel-keyed builds
 
@@ -44,37 +53,42 @@ equal `uname -r`), and TrueNAS point releases usually reuse the previous
 release's kernel. The pipeline is keyed accordingly:
 
 - check-releases.yml resolves a new stable version's kernel from its
-  rootfs.mtree manifest. If a promoted release for that kernel (with the
-  current driver) already exists, no build is dispatched;
-  tracked-versions.json still updates and the installer serves the new
-  version by kernel match. If the only coverage is an unpromoted build
-  awaiting hardware test, no duplicate build is dispatched either, but the
-  tracked version holds until that build is promoted (so the kernel keeps a
-  rebuild path if the build is deleted). Preview (BETA/RC) builds never
-  count as coverage.
+  rootfs.mtree manifest. If a release for that kernel (with the current
+  driver) already exists and is approved for the new version's train
+  (promoted with that train's `verified-train` marker, or a grandfathered
+  full release), no build is dispatched; tracked-versions.json still
+  updates and the installer serves the new version by kernel match. If the
+  only coverage is a build still awaiting its hardware test on that train,
+  no duplicate build is dispatched either, but the tracked version holds
+  until that build is approved (so the kernel keeps a rebuild path if the
+  build is deleted). Preview (BETA/RC) builds never count as coverage.
 - Coverage only counts while the Latest release is kernel-keyed (its tag
-  starts with `k`). The one-line installer runs the install.sh attached to
-  Latest, and until the first k-tagged build is promoted that is the
-  pre-migration installer, which matches exact TrueNAS versions only; a
-  skipped build would leave the new version with nothing it can serve. So
-  until then, and whenever the Latest lookup fails, every new stable
-  version builds as before.
+  starts with `k`). The older one-line installer runs the install.sh
+  attached to Latest, and until the first k-tagged build is promoted that
+  is the pre-migration installer, which matches exact TrueNAS versions
+  only; a skipped build would leave the new version with nothing it can
+  serve. So until then, and whenever the Latest lookup fails, every new
+  stable version builds as before. (`get.sh` does not depend on Latest: it
+  runs the approved release's own installer on that release's image.)
 - A new kernel, a driver bump, or an unresolvable kernel always builds.
-- install.sh selects releases by matching `uname -r` against the release's
-  `Target kernel` row, falling back to the short kernel encoded in a k-tag
-  when a body lost its row (the same rule check-releases' coverage gate
-  uses), then verifies the downloaded image's own `usr/lib/modules/<kernel>`
-  directory before installing. Kernel matching is additionally scoped to the
-  box's TrueNAS train, because the sysext also ships userspace (libhailort,
-  hailortcli) built against that train's base system. The `hailo.kver`
+- install.sh (and get.sh, which carries the same selection code) selects
+  releases approved for the box's train (see above) by matching `uname -r`
+  against the release's `Target kernel` row, falling back to the short
+  kernel encoded in a k-tag when a body lost its row (the same rule
+  check-releases' coverage gate uses), then verifies the downloaded image's
+  own `usr/lib/modules/<kernel>` directory before installing. Kernel
+  matching is additionally scoped to the box's TrueNAS train, because the
+  sysext also ships userspace (libhailort, hailortcli) built against that
+  train's base system. The `hailo.kver`
   asset carries the same kernel string in machine-readable form for
   external tooling; install.sh does not read it (the notes row is the one
   key every release has, since older immutable releases predate the asset).
 - New releases are tagged `k<kernel>-hailo<driver>-r<run>` (short kernel,
   e.g. `k6.12.91`). Releases published before the migration keep their
   `v<version>` tags; both install the same way.
-- Hardware-test promotion is per build, which now means per kernel: one
-  verification covers every TrueNAS version sharing that kernel.
+- Hardware-test sign-off is per build, which now means per kernel and
+  train: one verification covers every TrueNAS version of that train
+  sharing that kernel.
 
 ## Custom Builds
 
@@ -89,7 +103,7 @@ If you need a build for a TrueNAS version or HailoRT version that doesn't have a
    - **HailoRT driver version** - e.g., `4.21.0` (must match a tag in [hailo-ai/hailort-drivers](https://github.com/hailo-ai/hailort-drivers))
    - **Train name** - e.g., `Goldeye` (must match the train iXsystems publishes the ISO under at `download.truenas.com/TrueNAS-SCALE-<train>/<version>/`; the build uses it to construct the ISO download URL). The current tracked train lives in [`.github/tracked-versions.json`](../.github/tracked-versions.json).
 4. The workflow builds `hailo.raw` and creates a GitHub release in your fork (~15-30 min, ~5 min cached)
-5. Use the install script from your fork's release, or download `hailo.raw` and install manually
+5. Install it with `get.sh`, passing `--repo=<you>/<fork> --release=<tag>` after `bash -s --` (pin the tag: the new build is a pre-release that no train has signed off yet), or download `hailo.raw` and install manually
 
 ### When to Build Custom
 

@@ -33,7 +33,7 @@ sysext is no longer compatible.
 4. If a matching release exists, re-run the installer:
 
    ```bash
-   curl -fsSL https://github.com/truenas-community-sysexts/hailo8-support/releases/latest/download/install.sh \
+   curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/hailo8-support/main/get.sh \
      | sudo bash
    ```
 
@@ -51,6 +51,29 @@ The PREINIT script can detect the mismatch but cannot fix it on its own:
 downloading a new `hailo.raw` requires network access, and PREINIT runs
 before the network stack is reliably up. Recovery is intentionally a
 human step.
+
+## No approved build for your kernel yet
+
+The installer only installs a build that a hardware test approved for your
+TrueNAS train (see [Per-train approval](install.md#per-train-approval)). A
+new build is a pre-release with an open hardware-test issue until someone
+verifies it on real hardware, so for a while the installer stops with:
+
+```
+No stable release found for kernel <kver> (TrueNAS <version>).
+Only a build a hardware test approved for TrueNAS train <train> is installed;
+nothing unapproved is, on stable or preview systems.
+A build for this kernel is awaiting hardware-test sign-off for train <train>.
+It installs once its test issue is closed as completed:
+  <tag>: https://github.com/<repo>/issues?q=...
+```
+
+The link opens that build's hardware-test issue. It is the one step left:
+once a tester closes it as completed, the same one-liner installs the
+build. If you have the hardware, the issue body lists the exact test steps;
+testing it yourself and reporting back is the fastest way to get it
+approved. Installing it before then is possible by hand (the issue's
+steps), but it is untested on your train.
 
 ## Reinstalling while `hailo_pci` is loaded
 

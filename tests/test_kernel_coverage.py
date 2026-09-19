@@ -190,6 +190,49 @@ class RolloutGuard(unittest.TestCase):
         self.assertEqual(run_coverage(rels, latest=KTAG_LATEST), "")
 
 
+class Approval(unittest.TestCase):
+    # "promoted" means approved for the new version's train, the installer's
+    # rule: a verified-train line for that train, or a full release with no
+    # line at all (grandfathered). Anything else is pending.
+
+    def test_promoted_release_with_its_trains_marker_covers(self):
+        out = run_coverage([release("k6.12.93-hailo4.21.0-r46", "25.10.5",
+                                    kver=K93, trains=["25.10"])])
+        self.assertEqual(out, "promoted k6.12.93-hailo4.21.0-r46")
+
+    def test_full_release_marked_for_another_train_only_is_pending(self):
+        out = run_coverage([release("k6.12.93-hailo4.21.0-r46", "25.10.5",
+                                    kver=K93, trains=["25.04"])])
+        self.assertEqual(out, "pending k6.12.93-hailo4.21.0-r46")
+
+    def test_prerelease_approved_for_the_train_covers(self):
+        out = run_coverage([release("k6.12.93-hailo4.21.0-r46", "25.10.5",
+                                    kver=K93, prerelease=True, trains=["25.10"])])
+        self.assertEqual(out, "promoted k6.12.93-hailo4.21.0-r46")
+
+    def test_26_x_versions_share_a_train(self):
+        k = "6.18.42-production+truenas"
+        out = run_coverage([release("k6.18.42-hailo4.21.0-r60", "26.0.0", "Halfmoon",
+                                    kver=k, trains=["26"])],
+                           kver=k, version="26.1.0")
+        self.assertEqual(out, "promoted k6.18.42-hailo4.21.0-r60")
+
+    def test_train_key_matches_the_installer(self):
+        # Same cases as test_release_selection.TrainKey: the coverage gate
+        # and the installer must scope trains identically.
+        from test_release_selection import TrainKey, train_key
+        src = SCRIPT.read_text()
+        start = src.index("    def train_key(v):")
+        end = src.index("\n\n", start)
+        import re
+        import textwrap
+        ns = {"re": re}
+        exec(textwrap.dedent(src[start:end]), ns)
+        for version, want in TrainKey.CASES.items():
+            self.assertEqual(ns["train_key"](version) or None, want, version)
+            self.assertEqual(train_key(version), want, version)
+
+
 class Pagination(unittest.TestCase):
     def test_concatenated_pages_are_merged(self):
         page1 = [release("v25.10.4-hailo4.21.0-r37", "25.10.4",
