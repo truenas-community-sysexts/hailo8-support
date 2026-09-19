@@ -41,25 +41,29 @@ console.log = (...a) => process.stderr.write(a.join(' ') + '\\n');
 const created = [];
 const github = { rest: { issues: {
   createLabel: async () => ({}),
-  listForRepo: async () => ({ data: [] }),
+  listForRepo: async () => ({ data: JSON.parse(process.env.OPEN_TITLES || '[]')
+    .map((title) => ({ title })) }),
   create: async (args) => { created.push(args); },
 } } };
 const context = { repo: { owner: process.env.OWNER, repo: process.env.REPO } };
 (async () => {
 %s
-})().then(() => process.stdout.write(JSON.stringify(created[0])),
+})().then(() => process.stdout.write(JSON.stringify(created[0] ?? null)),
           (e) => { process.stderr.write(String(e)); process.exit(1); });
 """
 
 
 def render_issue(tag, version, train, kver, driver="4.21.0", preview=False,
-                 owner="truenas-community-sysexts", repo="hailo8-support"):
-    """The issues.create() arguments build.yml's step produces."""
+                 owner="truenas-community-sysexts", repo="hailo8-support",
+                 open_titles=()):
+    """The issues.create() arguments build.yml's step produces, or None when
+    it skips creating one because an issue in open_titles names the tag."""
     env = {**os.environ,
            "RELEASE_TAG": tag, "TRUENAS_VERSION": version, "TRAIN_NAME": train,
            "REAL_KVER": kver, "HAILO_DRIVER": driver,
            "IS_PREVIEW": "true" if preview else "false",
-           "OWNER": owner, "REPO": repo}
+           "OWNER": owner, "REPO": repo,
+           "OPEN_TITLES": json.dumps(list(open_titles))}
     p = subprocess.run(["node", "-e", HARNESS % issue_script()],
                        capture_output=True, text=True, env=env)
     if p.returncode != 0:
@@ -114,6 +118,39 @@ class Markers(unittest.TestCase):
         env_tag = next(line.split(":", 1)[1].strip() for line in step_lines()
                        if line.strip().startswith("RELEASE_TAG:"))
         self.assertEqual(env_tag, tag_name)
+
+
+class Title(unittest.TestCase):
+    # What to test | on what | which build. The step skips creating an issue
+    # when an open one's title includes the tag, so the tag must appear in
+    # the title verbatim; it goes last.
+    def test_stable_title(self):
+        self.assertEqual(render_issue(**STABLE)["title"],
+                         "Hardware test: Hailo-8 driver HailoRT 4.21.0 | "
+                         "TrueNAS 25.10.7 (kernel 6.12.105) | k6.12.105-hailo4.21.0-r50")
+
+    def test_preview_title(self):
+        self.assertEqual(render_issue(**PREVIEW)["title"],
+                         "Preview hardware test: Hailo-8 driver HailoRT 4.21.0 | "
+                         "TrueNAS 26.0.0-BETA.3 (kernel 6.18.42) | k6.18.42-hailo4.21.0-r51")
+
+    def test_unknown_kernel_is_left_out(self):
+        for params, prefix in ((STABLE, "Hardware test"), (PREVIEW, "Preview hardware test")):
+            title = render_issue(**{**params, "kver": ""})["title"]
+            self.assertEqual(title, f"{prefix}: Hailo-8 driver HailoRT 4.21.0 | "
+                                    f"TrueNAS {params['version']} | {params['tag']}")
+
+    def test_title_ends_with_the_tag(self):
+        for params in (STABLE, PREVIEW):
+            title = render_issue(**params)["title"]
+            self.assertIn(params["tag"], title)
+            self.assertTrue(title.endswith(f" | {params['tag']}"), title)
+
+    def test_open_issue_with_this_title_blocks_a_duplicate(self):
+        # The step's own title must satisfy its duplicate check.
+        for params in (STABLE, PREVIEW):
+            title = render_issue(**params)["title"]
+            self.assertIsNone(render_issue(**params, open_titles=[title]))
 
 
 class Commands(unittest.TestCase):
