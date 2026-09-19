@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from urllib.parse import urlparse
 
 from release_fixtures import release
 
@@ -23,19 +24,29 @@ UNINSTALL_SH = ROOT / "scripts" / "uninstall.sh"
 REPO = "truenas-community-sysexts/hailo8-support"
 FW_SHA = "2a" * 32
 
+
+def logged_host(line):
+    """Hostname of the URL in a stub-log line ("curl <url>"), or "" for other lines."""
+    parts = line.split()
+    if len(parts) > 1 and parts[0] == "curl":
+        return urlparse(parts[1]).hostname or ""
+    return ""
+
 CURL_STUB = textwrap.dedent("""\
     #!/usr/bin/env python3
     import hashlib, json, os, re, sys
+    from urllib.parse import urlparse
     args = sys.argv[1:]
     url = next(a for a in args if a.startswith("https://"))
     with open(os.environ["STUB_LOG"], "a") as f:
         f.write("curl " + url + "\\n")
-    if "api.github.com" in url:
+    host = urlparse(url).hostname
+    if host == "api.github.com":
         page = int(re.search(r"[?&]page=(\\d+)", url).group(1))
         pages = json.load(open(os.environ["STUB_PAGES"]))
         print(json.dumps(pages[page - 1] if page <= len(pages) else []))
         sys.exit(0)
-    if "/releases/download/" not in url:
+    if host != "github.com" or "/releases/download/" not in url:
         sys.exit(22)
     repo = url.split("https://github.com/")[1].split("/releases/download/")[0]
     tag, asset = url.split("/releases/download/")[1].split("/")
@@ -199,7 +210,7 @@ class Install(GetShBase):
         p = self.get(f"--release={R45}", **BETA3)
         self.assert_installed(p, R45)
         self.assertIn(f"Release {R45} (pinned with --release)", p.stderr)
-        self.assertFalse(any(c.startswith("midclt") or "api.github.com" in c
+        self.assertFalse(any(c.startswith("midclt") or logged_host(c) == "api.github.com"
                              for c in self.calls()), self.calls())
 
     def test_bad_checksum_stops_before_the_installer(self):
@@ -232,7 +243,8 @@ class Install(GetShBase):
         p = self.get("--repo=someone/fork")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("REPO=someone/fork", p.stdout)
-        self.assertTrue(any("api.github.com/repos/someone/fork/releases" in c
+        self.assertTrue(any(logged_host(c) == "api.github.com"
+                            and urlparse(c.split()[1]).path == "/repos/someone/fork/releases"
                             for c in self.calls()))
         self.assertTrue(all("/someone/fork/releases/download/" in c
                             for c in self.calls() if "/releases/download/" in c))
