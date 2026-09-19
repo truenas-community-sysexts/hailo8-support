@@ -1068,9 +1068,13 @@ jobs:
             const labelDescription = isPreview
               ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
               : 'Auto-build awaiting hardware verification';
-            const title = isPreview
-              ? `Preview hardware test: TrueNAS ${version} / HailoRT ${driver} (${tag})`
-              : `Hardware test: TrueNAS ${version} / HailoRT ${driver} (${tag})`;
+            // Title: what to test | on what | which build. The tag goes last,
+            // verbatim: the duplicate check below matches on it. The kernel
+            // is the real one cut at its first '-' (6.12.105), left out when
+            // unknown rather than printed empty.
+            const shortKver = (kver || '').split('-')[0];
+            const target = `TrueNAS ${version}${shortKver ? ` (kernel ${shortKver})` : ''}`;
+            const title = `${isPreview ? 'Preview hardware test' : 'Hardware test'}: Hailo-8 driver HailoRT ${driver} | ${target} | ${tag}`;
 
             // Ensure the label exists (idempotent; no-ops if already present).
             try {
