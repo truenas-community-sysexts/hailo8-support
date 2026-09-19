@@ -408,7 +408,8 @@ else:
 # The release for a box running TrueNAS $1 (train $3) on kernel $2, chosen
 # from the release pages in $5. $4 is "install" (a build to install: it must
 # target this kernel and train) or "scripts" (only the release's scripts are
-# needed: uninstall, --check, --help). Prints its tag; explains on stderr and
+# needed: uninstall, --check, --help; the build for this kernel, else any
+# approved build of this train). Prints its tag; explains on stderr and
 # fails when there is none.
 select_release() {
     VERSION="$1" KVER="$2" TRAIN="$3" PURPOSE="$4" REPO="$REPO" python3 -c "
@@ -483,6 +484,11 @@ def same_train(release):
     if not m:
         return True
     return train_key(m.group(1)) == train
+def built_for_train(release):
+    # Stricter than same_train: the notes header must name a version of this
+    # box's train (no header does not pass).
+    m = hdr_re.search(release.get('body') or '')
+    return bool(m) and train_key(m.group(1)) == train
 def preview_release(release):
     # Kernel-keyed tags (k6.18.23-...) carry no BETA marker, so the tag
     # check alone stopped covering new preview builds; the notes header
@@ -546,8 +552,11 @@ if not matches:
         print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
 if not matches and scripts_only:
     # With no approved build for this kernel (a box on an untested kernel,
-    # say), the scripts of the newest release approved for the train serve.
-    matches = candidates
+    # say), the scripts of the newest approved release BUILT FOR THIS TRAIN
+    # serve. Never another train's, grandfathered or not: its scripts target
+    # that train's install layout (a 25.10 build's restore.sh toggles /usr
+    # readonly, and its --check probes the old boot-pool copy).
+    matches = [r for r in candidates if built_for_train(r)]
 def published(release):
     return release.get('published_at') or release.get('created_at') or ''
 if not matches:
@@ -567,6 +576,9 @@ if not matches:
             t = r.get('tag_name', '?')
             label = 'preview-hardware-test' if preview_release(r) else 'hardware-test'
             print(f'  {t}: https://github.com/{repo}/issues?q=is%3Aissue+label%3A{label}+in%3Atitle+%22{t}%22', file=sys.stderr)
+    if scripts_only:
+        print(f'Uninstall, --check and --help use only a release built for train {train}.', file=sys.stderr)
+        print('To use a specific release anyway, pass --release=TAG to get.sh.', file=sys.stderr)
     print('Otherwise a build may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
     print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
     for r in [x for x in data if not x.get('draft')]:
@@ -587,7 +599,8 @@ print(matches[0]['tag_name'], end='')
 # The release to use on this box: the newest one a hardware test approved for
 # its TrueNAS train and built for its running kernel ($1 = install), or, when
 # only the release's scripts are needed ($1 = scripts), the same release or,
-# failing that, the newest one approved for the train. Prints the tag.
+# failing that, the newest approved one built for this train (never another
+# train's). Prints the tag.
 approved_release_tag() {
     local purpose="${1:-install}" version kver train pages tag
     version=$(detect_truenas_version) || {

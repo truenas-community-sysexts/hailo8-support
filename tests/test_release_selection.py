@@ -443,8 +443,9 @@ class NoCandidate(unittest.TestCase):
 class ScriptsPurpose(unittest.TestCase):
     # Uninstall, --check and --help run only the release's scripts: the
     # build for this kernel when there is an approved one, else the newest
-    # release approved for the train, whatever its kernel. Never an
-    # unapproved one.
+    # approved release BUILT FOR THIS TRAIN (notes header), whatever its
+    # kernel. Never another train's release, even a grandfathered one: its
+    # scripts target that train's install layout. Never an unapproved one.
 
     def test_prefers_the_build_for_this_kernel(self):
         rels = [stable7("v25.10.7-hailo4.21.0-r43", published="2026-01-01T00:00:00Z"),
@@ -453,14 +454,53 @@ class ScriptsPurpose(unittest.TestCase):
         p = run_selection(rels, *STABLE7, purpose="scripts")
         self.assertEqual(p.stdout, "v25.10.7-hailo4.21.0-r43")
 
-    def test_untested_kernel_takes_newest_approved_for_the_train(self):
+    def test_26_box_with_only_grandfathered_25_10_releases_refuses(self):
+        # truenas1 before the grandfather markers: r40's --check probed the
+        # old boot-pool copy and its restore.sh toggles /usr readonly.
         rels = [beta3("k6.18.42-hailo4.21.0-r47", published="2026-03-01T00:00:00Z"),
-                stable7("v25.10.5-hailo4.21.0-r40", published="2026-02-01T00:00:00Z"),
-                stable7("v25.10.4-hailo4.21.0-r37", published="2026-01-01T00:00:00Z")]
+                release("v25.10.5-hailo4.21.0-r40", "25.10.5",
+                        kver="6.12.95-production+truenas", published="2026-02-01T00:00:00Z"),
+                release("v25.10.4-hailo4.21.0-r37", "25.10.4",
+                        kver="6.12.91-production+truenas", published="2026-01-01T00:00:00Z")]
+        p = run_selection(rels, *BETA3, purpose="scripts")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(p.stdout, "")
+        self.assertIn("awaiting hardware-test sign-off for train 26", p.stderr)
+        self.assertIn("k6.18.42-hailo4.21.0-r47: https://github.com/", p.stderr)
+        self.assertIn("use only a release built for train 26", p.stderr)
+        self.assertIn("--release=TAG", p.stderr)
+        self.assertNotIn("different TrueNAS train", p.stderr)
+
+    def test_26_box_uses_a_26_approved_release_on_another_kernel(self):
+        rels = [beta3("k6.18.42-hailo4.21.0-r47", published="2026-04-01T00:00:00Z"),
+                release("v25.10.5-hailo4.21.0-r40", "25.10.5",
+                        kver="6.12.95-production+truenas", published="2026-03-01T00:00:00Z"),
+                release("v26.0.0-BETA.2-hailo4.21.0-r38", "26.0.0-BETA.2", "Halfmoon",
+                        kver="6.18.23-production+truenas", prerelease=True, trains=["26"],
+                        published="2026-02-01T00:00:00Z")]
         p = run_selection(rels, *BETA3, purpose="scripts")
         self.assertEqual(p.returncode, 0, p.stderr)
+        # r40 is newer and grandfathered, but built for 25.10.
+        self.assertEqual(p.stdout, "v26.0.0-BETA.2-hailo4.21.0-r38")
+
+    def test_25_10_box_on_an_untested_kernel_is_unchanged(self):
+        rels = [release("v25.10.5-hailo4.21.0-r40", "25.10.5",
+                        kver="6.12.95-production+truenas", published="2026-02-01T00:00:00Z"),
+                release("v25.10.4-hailo4.21.0-r37", "25.10.4",
+                        kver="6.12.91-production+truenas", published="2026-01-01T00:00:00Z"),
+                release("v25.04.2-hailo4.21.0-r41", "25.04.2", "Fangtooth",
+                        kver="6.12.15-production+truenas", published="2026-03-01T00:00:00Z")]
+        p = run_selection(rels, "25.10.9", "6.12.200-production+truenas", purpose="scripts")
+        self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout, "v25.10.5-hailo4.21.0-r40")
-        self.assertNotIn("different TrueNAS train", p.stderr)
+
+    def test_release_without_a_notes_header_is_no_fallback(self):
+        # same_train lets a header-less release through for a kernel match;
+        # the scripts fallback needs the header to name this train.
+        rel = release("k6.12.95-hailo4.21.0-r40", kver="6.12.95-production+truenas")
+        rel["body"] = "| Target kernel | `6.12.95-production+truenas` |\n"
+        p = run_selection([rel], *STABLE7, purpose="scripts")
+        self.assertNotEqual(p.returncode, 0)
 
     def test_never_an_unapproved_release(self):
         p = run_selection([beta3("k6.18.42-hailo4.21.0-r47")], *BETA3, purpose="scripts")
@@ -471,6 +511,7 @@ class ScriptsPurpose(unittest.TestCase):
         rels = [stable7("v25.10.5-hailo4.21.0-r40")]
         p = run_selection(rels, *BETA3)
         self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("--release=TAG", p.stderr)
 
 
 class TrainKey(unittest.TestCase):

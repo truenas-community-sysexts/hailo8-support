@@ -84,6 +84,7 @@ R47 = "k6.18.42-hailo4.21.0-r47"
 R45 = "k6.18.42-hailo4.21.0-r45"
 R40 = "v25.10.5-hailo4.21.0-r40"
 R37 = "v25.10.4-hailo4.21.0-r37"
+R38 = "v26.0.0-BETA.2-hailo4.21.0-r38"
 
 
 def releases(r47_trains=()):
@@ -255,10 +256,19 @@ class Install(GetShBase):
         self.assertEqual(list(self.dir.glob("hailo-get.*")), [])
 
 
+def with_r38():
+    """Today's releases plus r38: a BETA.2 build (another kernel) signed off
+    on train 26."""
+    return releases() + [release(R38, "26.0.0-BETA.2", "Halfmoon",
+                                 kver="6.18.23-production+truenas", prerelease=True,
+                                 trains=["26"], published="2026-06-26T01:24:38Z")]
+
+
 class ScriptsOnly(GetShBase):
     """Uninstall, --check, --help and the user's own image need only the
     release's scripts: the approved build for this kernel, or on an untested
-    kernel the newest release approved for the train."""
+    kernel the newest approved release built for the box's train. Never
+    another train's release, even a grandfathered one."""
 
     def test_check_runs_the_installers_probe_without_an_image(self):
         p = self.get("--check")
@@ -266,8 +276,23 @@ class ScriptsOnly(GetShBase):
         self.assertEqual(self.ran(p), f"RAN install.sh from {R40} with: --check")
         self.assertEqual(self.downloads(), [f"{R40}/install.sh"])
 
-    def test_check_on_an_untested_kernel_uses_newest_approved_for_the_train(self):
+    def test_check_on_a_26_box_never_uses_a_25_10_release(self):
+        # truenas1 before the markers: only grandfathered 25.10 releases are
+        # approved, and r40's --check probed the old boot-pool copy.
         p = self.get("--check", **BETA3)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("RAN", p.stdout)
+        self.assertEqual(self.downloads(), [])
+        self.assertIn(f"{R47}: https://github.com/{REPO}/issues?q=", p.stderr)
+        self.assertIn("--release=TAG", p.stderr)
+
+    def test_check_on_a_26_box_uses_a_26_release_on_another_kernel(self):
+        p = self.get("--check", rels=with_r38(), **BETA3)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.ran(p), f"RAN install.sh from {R38} with: --check")
+
+    def test_check_on_a_25_10_box_with_an_untested_kernel_is_unchanged(self):
+        p = self.get("--check", version="25.10.9", kver="6.12.200-production+truenas")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(self.ran(p), f"RAN install.sh from {R40} with: --check")
 
@@ -282,10 +307,25 @@ class ScriptsOnly(GetShBase):
         self.assertIn("BESIDE: restore.sh uninstall.sh", p.stdout)
         self.assertEqual(self.downloads(), [f"{R47}/uninstall.sh", f"{R47}/restore.sh"])
 
-    def test_uninstall_never_uses_an_unapproved_release(self):
+    def test_uninstall_on_a_26_box_refuses_other_trains_and_unapproved_releases(self):
+        # r40's restore.sh would toggle /usr readonly on an in-place install.
         p = self.get("--uninstall", **BETA3)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("RAN", p.stdout)
+        self.assertEqual(self.downloads(), [])
+        self.assertIn(f"{R47}: https://github.com/", p.stderr)
+        self.assertIn(f"{R45}: https://github.com/", p.stderr)
+
+    def test_uninstall_on_a_26_box_uses_a_26_release_on_another_kernel(self):
+        p = self.get("--uninstall", rels=with_r38(), **BETA3)
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(self.ran(p), f"RAN uninstall.sh from {R40} with:")
+        self.assertEqual(self.ran(p), f"RAN uninstall.sh from {R38} with:")
+        self.assertEqual(self.downloads(), [f"{R38}/uninstall.sh", f"{R38}/restore.sh"])
+
+    def test_pinned_uninstall_is_the_escape_hatch(self):
+        p = self.get("--uninstall", f"--release={R47}", **BETA3)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.ran(p), f"RAN uninstall.sh from {R47} with:")
 
     def test_pinned_uninstall(self):
         p = self.get("--uninstall", f"--release={R45}")
@@ -326,6 +366,13 @@ class UninstallStandalone(Stubbed):
         p = self.uninstall(rels=rels, **BETA3)
         self.assertNotEqual(p.returncode, 0)
         self.assertEqual(self.downloads(), [])
+
+    def test_never_another_trains_restore(self):
+        # Only grandfathered 25.10 releases are approved for this 26 box.
+        p = self.uninstall(rels=releases(), **BETA3)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(self.downloads(), [])
+        self.assertNotIn("RAN", p.stdout)
 
     def test_restore_download_failure_is_fatal(self):
         p = self.uninstall(rels=releases(), STUB_FAIL="restore.sh", **STABLE5)

@@ -23,7 +23,7 @@ Options go after `bash -s --`. Anything `get.sh` does not consume is passed to t
 | `--repo=OWNER/NAME` | Use a fork's releases (also `HAILO_REPO`) |
 | `--check`, `--help` | Passed to the release's `install.sh`, which needs no image for them |
 
-`--uninstall`, `--check` and `--help` only need the release's scripts, so on a kernel with no approved build they use the newest release approved for your train.
+`--uninstall`, `--check` and `--help` only need the release's scripts, so on a kernel with no approved build they use the newest approved release **built for your train**. They never fall back to another train's release, not even a grandfathered one: its scripts target that train's install layout. With no approved release of your train they stop and name the waiting hardware tests; `--release=TAG` picks a release explicitly.
 
 ## Per-train approval
 
