@@ -154,6 +154,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       run_number: ${{ steps.build_id.outputs.run_number }}
+      short_kver: ${{ steps.kver.outputs.short_kver }}
+      real_kver: ${{ steps.kver.outputs.real_kver }}
 
     steps:
       - name: Checkout repository
@@ -412,6 +414,7 @@ jobs:
           key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
+        id: kver
         run: |
           # Same selector pattern as the extract step: prefer production,
           # fall back to non-debug, then fail loud rather than picking up
@@ -447,6 +450,12 @@ jobs:
           fi
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
+          # Short form (6.12.91 from 6.12.91-production+truenas) keys the
+          # release tag; exposed as a step output so workflow expressions can
+          # reference it, mirroring the build_id pattern. The full string goes
+          # into the hardware-test issue's uname -r pre-check.
+          echo "short_kver=${REAL_KVER%%-*}" >> "$GITHUB_OUTPUT"
+          echo "real_kver=${REAL_KVER}" >> "$GITHUB_OUTPUT"
 
           # Detect the GCC major version the kernel was compiled with, instead of
           # hardcoding one. Newer TrueNAS kernels move forward: 6.6/6.12 were
@@ -814,6 +823,15 @@ jobs:
           sha256sum hailo.raw > hailo.raw.sha256
           cat hailo.raw.sha256
 
+      - name: Write kernel version asset
+        run: |
+          # hailo.kver ships with the release so tooling can key on the exact
+          # kernel without parsing the release notes. install.sh still parses
+          # the notes: they are the only key that exists on releases published
+          # before this asset (releases are immutable, no backfilling).
+          printf '%s\n' "${REAL_KVER}" > hailo.kver
+          cat hailo.kver
+
       - name: Compute firmware sha256
         # Each release self-describes the firmware sha it was built against.
         # install.sh fetches this asset from the same release as hailo.raw,
@@ -852,14 +870,17 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
+          SHORT_KVER: ${{ steps.kver.outputs.short_kver }}
         run: |
           # The body is regenerated on every dispatch — no template file checked
           # in. REAL_KVER comes from the kernel-detection step (exported via
           # GITHUB_ENV); the rest are workflow inputs / runtime metadata. The
-          # body links to the Frigate install_hailort.sh on the dev branch (the
-          # canonical consumer per CLAUDE.md) so the human gating "Set as latest"
+          # body links to the file pinning Frigate's HailoRT on the dev branch
+          # (the canonical consumer per CLAUDE.md; Frigate moved the pin from
+          # docker/main/install_hailort.sh to hailo.py when it began installing
+          # HailoRT at first start) so the human gating "Set as latest"
           # can confirm the build matches what Frigate is actually shipping.
-          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER} ${SHORT_KVER}' > release-notes.md <<'RELEASE_NOTES'
           ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
@@ -868,7 +889,9 @@ jobs:
           | Target kernel | `${REAL_KVER}` |
           | Built on | `${RUNNER_IMAGE}` |
           | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
-          | Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: `${HAILO_DRIVER}` |
+          | Frigate compatibility | [hailo.py (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/frigate/detectors/plugins/hailo.py), HAILORT_VERSION must be `${HAILO_DRIVER}` |
+
+          This build targets kernel `${REAL_KVER}` and loads on any TrueNAS release shipping that exact kernel, not only ${TRUENAS_VERSION}. The README supported versions table lists the covered versions.
 
           **Target Device:** Hailo-8 AI Accelerator (PCIe). For Hailo-10/15, see [README](https://github.com/${REPO}#compatibility).
 
@@ -885,18 +908,18 @@ jobs:
 
           ### Install
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
           ```
 
           ### Verify
           ```bash
-          sudo ./install.sh --check
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash -s -- --check
           sudo hailortcli fw-control identify
           ```
 
           ### Uninstall
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
           ```
 
           ### Checksums
@@ -913,6 +936,7 @@ jobs:
           path: |
             hailo.raw
             hailo.raw.sha256
+            hailo.kver
             firmware.sha256
             release-notes.md
 
@@ -940,14 +964,14 @@ jobs:
           # github.run_number is monotonic per workflow, so it also covers
           # the same-commit re-dispatch case (manual retry, fresh build
           # after a deleted release) where a SHA alone wouldn't change.
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-r${{ needs.build.outputs.run_number }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (r${{ needs.build.outputs.run_number }})"
+          tag_name: k${{ needs.build.outputs.short_kver }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-r${{ needs.build.outputs.run_number }}
+          name: "Kernel ${{ needs.build.outputs.short_kver }} (TrueNAS ${{ needs.resolve.outputs.truenas_version }}) - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (r${{ needs.build.outputs.run_number }})"
           body_path: release-notes.md
           files: |
             hailo.raw
             hailo.raw.sha256
+            hailo.kver
             firmware.sha256
-            scripts/hailo-lib.sh
             scripts/install.sh
             scripts/restore.sh
             scripts/uninstall.sh
@@ -966,9 +990,9 @@ jobs:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
         run: |
           # A preview (BETA/RC) target always publishes as a prerelease, no
-          # matter what the dispatch says: the prerelease flag is the stable
-          # channel's primary lock against serving a beta build, and
-          # mark_latest must not be able to clear it.
+          # matter what the dispatch says: k-tags carry no BETA marker, so the
+          # prerelease flag is the stable channel's primary lock against
+          # serving a beta build, and mark_latest must not be able to clear it.
           IS_PREVIEW=false
           case "$TRUENAS_VERSION" in
             *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
@@ -1015,13 +1039,22 @@ jobs:
         uses: actions/github-script@v9
         env:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
+          TRAIN_NAME: ${{ needs.resolve.outputs.train_name }}
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
-          RUN_NUMBER: ${{ needs.build.outputs.run_number }}
+          REAL_KVER: ${{ needs.build.outputs.real_kver }}
+          # Same expression as the release step's tag_name (a unit test
+          # holds the two together).
+          RELEASE_TAG: k${{ needs.build.outputs.short_kver }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-r${{ needs.build.outputs.run_number }}
           IS_PREVIEW: ${{ steps.publish.outputs.is_preview }}
         with:
           script: |
-            const tag = `v${process.env.TRUENAS_VERSION}-hailo${process.env.HAILO_DRIVER}-r${process.env.RUN_NUMBER}`;
-            const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
+            const tag = process.env.RELEASE_TAG;
+            const version = process.env.TRUENAS_VERSION;
+            const train = process.env.TRAIN_NAME;
+            const driver = process.env.HAILO_DRIVER;
+            const kver = process.env.REAL_KVER;
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            const releaseUrl = `${repoUrl}/releases/tag/${tag}`;
 
             // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
             // channel. Those builds must NEVER be promoted to Latest (that would
@@ -1036,8 +1069,8 @@ jobs:
               ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
               : 'Auto-build awaiting hardware verification';
             const title = isPreview
-              ? `Preview hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`
-              : `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / HailoRT ${process.env.HAILO_DRIVER} (${tag})`;
+              ? `Preview hardware test: TrueNAS ${version} / HailoRT ${driver} (${tag})`
+              : `Hardware test: TrueNAS ${version} / HailoRT ${driver} (${tag})`;
 
             // Ensure the label exists (idempotent; no-ops if already present).
             try {
@@ -1070,16 +1103,37 @@ jobs:
               return;
             }
 
-            const promoteSection = isPreview
+            // A human follows this body by hand, so every command must work
+            // as written: the downloads are this release's own assets, and
+            // the flags are install.sh's (tests/test_issue_template.py checks
+            // both). A prerelease is never auto-selected, so the build is
+            // installed as a local hailo.raw, which makes install.sh require
+            // the firmware version and expected sha explicitly.
+            // Frigate installs HailoRT at first start and pins it here.
+            const frigatePin = 'https://github.com/blakeblackshear/frigate/blob/dev/frigate/detectors/plugins/hailo.py';
+            // The same checks run after install and again after the reboot.
+            const checks = [
+              'cd ~/hailo-test',
+              'sudo bash install.sh --check            # expect "0 fail" in the Summary line',
+              `hailortcli fw-control identify          # expect "Firmware Version: ${driver} ..." and "Device Architecture: HAILO8" (HAILO8L on a Hailo-8L)`,
+              'lsmod | grep hailo                      # expect a hailo_pci line',
+              'ls -l /dev/hailo0                       # expect crw-rw-rw- (mode 0666 from the sysext udev rule)',
+              'readlink /run/extensions/hailo.raw      # expect /mnt/<pool>/.config/hailo/hailo.raw',
+              "sudo dmesg | grep -iE 'find_vma|rwsem'  # expect no output (mmap-lock patch)",
+            ];
+
+            const intro = isPreview
+              ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently and is never promoted to Latest, so stable installs are unaffected.`
+              : `An auto-build published a new stable release that needs hardware verification before it is promoted. Until then it is a pre-release, so neither \`releases/latest\` nor the one line installer serves it.`;
+
+            const signOff = isPreview
               ? [
-                  `### Promote`,
-                  `This is a **TrueNAS ${process.env.TRUENAS_VERSION} preview build**. It is intentionally kept as a permanent **pre-release** and is **never** promoted to Latest, so stable installs are unaffected.`,
-                  `Once you've verified it on hardware, **close this issue as completed** to record the sign-off. The release stays a pre-release; install it explicitly via its tag.`,
+                  `- **Works:** close this issue as **completed**. That records the sign-off only: the release stays a pre-release and is never promoted to Latest.`,
+                  `- **Broken:** close it as **not planned**, and delete the release, since preview systems would otherwise keep installing it.`,
                 ]
               : [
-                  `### Promote`,
-                  `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
-                  `Once you've verified it on hardware, **close this issue as completed**: that automatically promotes [\`${tag}\`](${releaseUrl}) to the latest release and appends the changelog.`,
+                  `- **Works:** close this issue as **completed**. That promotes [\`${tag}\`](${releaseUrl}) to a full release and appends the changelog. It becomes Latest only if it outranks the current Latest (a newer kernel, or a newer build of the same kernel).`,
+                  `- **Broken:** close it as **not planned**, so nothing is promoted, and delete the release: an unpromoted build keeps counting as pending coverage for its kernel and holds back a rebuild.`,
                 ];
 
             await github.rest.issues.create({
@@ -1088,37 +1142,66 @@ jobs:
               title,
               labels: [label],
               body: [
-                isPreview
-                  ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently.`
-                  : `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
+                intro,
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
-                `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
-                `**HailoRT:** ${process.env.HAILO_DRIVER}`,
+                `<!-- preview-build: ${isPreview} -->`,
                 ``,
-                `### Install THIS build to test it`,
-                `It is a **pre-release**, so the default \`latest\` install (and version auto-resolve) skip it. Install this exact build:`,
-                // Pre-releases have no firmware.sha256 fetched by auto-resolve,
-                // so install.sh runs in --local-raw mode and requires the firmware
-                // version + expected sha explicitly (see install.sh local-raw guard).
-                // Supply both: the version is the HailoRT driver, the sha comes from
-                // this release's firmware.sha256 asset.
+                `### Requirements`,
+                `- **TrueNAS:** ${version} (${train}), target kernel \`${kver}\`. The installer serves this build to any ${train} version running that exact kernel, and refuses to install it on any other kernel.`,
+                `- **Hardware:** a Hailo-8 (or Hailo-8L) PCIe card.`,
+                `- **HailoRT:** ${driver}. Frigate's pinned HailoRT (\`HAILORT_VERSION\` in [hailo.py](${frigatePin})) must match.`,
+                `- Run every block below in bash (start one with \`bash\` if your login shell is zsh), so the \`# expect\` notes are read as comments.`,
+                ``,
+                `### 1. Pre-checks`,
                 "```bash",
-                `BASE=https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}`,
-                `curl -fsSL "$BASE/hailo.raw" -o /tmp/hailo.raw`,
-                `curl -fsSL "$BASE/install.sh" | sudo bash -s -- /tmp/hailo.raw \\`,
-                `  --firmware-version=${process.env.HAILO_DRIVER} \\`,
-                `  --expected-firmware-sha="$(curl -fsSL "$BASE/firmware.sha256")"`,
+                `uname -r                                # must print ${kver}`,
+                'lspci -nnk -d 1e60:                     # must list the Hailo device (vendor 1e60)',
+                'sudo midclt call -j app.stop frigate    # stop Frigate (or use the Apps UI); use your app name if it is not frigate',
                 "```",
                 ``,
-                `### Test checklist`,
-                `- [ ] Download and install on a TrueNAS system with a Hailo-8 card`,
-                `- [ ] Confirm \`hailortcli fw-control identify\` succeeds`,
-                `- [ ] Confirm Frigate detects the Hailo device`,
-                `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
+                `### 2. Install this build`,
+                `Download this release's files into one directory; \`install.sh\` needs nothing else. Installing a local \`hailo.raw\` requires \`--firmware-version\` and \`--expected-firmware-sha\`: the firmware is fetched from Hailo and checked against this release's \`firmware.sha256\`.`,
+                "```bash",
+                'mkdir -p ~/hailo-test && cd ~/hailo-test',
+                `BASE=${repoUrl}/releases/download/${tag}`,
+                'for f in hailo.raw hailo.raw.sha256 install.sh firmware.sha256; do curl -fsSL "$BASE/$f" -o "$f"; done',
+                'sha256sum -c hailo.raw.sha256           # expect "hailo.raw: OK"',
+                'sudo bash install.sh ./hailo.raw \\',
+                `  --firmware-version=${driver} \\`,
+                '  --expected-firmware-sha="$(cat firmware.sha256)"',
+                "```",
+                `This installs with in-place activation: the image (with the firmware injected) is written to \`/mnt/<pool>/.config/hailo/hailo.raw\` on a data pool and \`/run/extensions/hailo.raw\` links straight to it. Nothing is copied to the boot pool. If the installer asks which pool to use, pick one (or add \`--pool=NAME\`).`,
                 ``,
-                ...promoteSection,
+                `### 3. Verify`,
+                "```bash",
+                ...checks,
+                "```",
+                `Before the first reboot, \`--check\` may warn "No hailo-preinit entries this boot": the PREINIT script has not run yet. Any other warning or failure is a finding.`,
+                ``,
+                `### 4. Reboot and re-verify`,
+                "```bash",
+                'sudo reboot',
+                "```",
+                `When the system is back, open a bash shell again and repeat the checks, then confirm the PREINIT script restored the sysext:`,
+                "```bash",
+                ...checks,
+                'sudo journalctl -b -t hailo-preinit --no-pager -o cat   # expect "Done" as the last line, and no line starting with "ERROR:"',
+                "```",
+                `\`--check\` should now also report "PREINIT completed successfully this boot".`,
+                ``,
+                `### 5. Report and sign off`,
+                `Start Frigate again:`,
+                "```bash",
+                'sudo midclt call -j app.start frigate   # or use the Apps UI; use your app name if it is not frigate',
+                "```",
+                `Once Frigate has run detections for a few minutes, check the kernel log once more (the find_vma warning only fires once inference maps DMA buffers):`,
+                "```bash",
+                "sudo dmesg | grep -iE 'find_vma|rwsem'  # expect no output",
+                "```",
+                `Comment on this issue with the output of \`uname -r\`, your hardware (the \`lspci -nnk -d 1e60:\` line and the \`hailortcli fw-control identify\` output), and the outputs of steps 3 and 4. Then:`,
+                ...signOff,
               ].join('\n'),
             });
             console.log(`Created ${label} issue for ${tag}`);

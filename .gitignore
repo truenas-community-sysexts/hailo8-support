@@ -29,5 +29,9 @@ hailo.raw.sha256
 *.ko
 build/
 
+# Python bytecode from running the test suite locally
+__pycache__/
+*.pyc
+
 # Plan/spec scratchpads from superpowers planning skills.
 docs/superpowers/
