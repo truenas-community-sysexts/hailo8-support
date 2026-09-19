@@ -14,6 +14,8 @@ Changes since the initial project baseline, organized by area.
 - **`midclt` lookup refused on transient error.** Distinguishes "not registered" from "lookup error" and aborts on the latter rather than guessing.
 - **Firmware sha256 verification.** `install.sh` verifies downloaded Hailo-8 firmware against the sha256 published as the release's `firmware.sha256` asset. Hard-fails on mismatch or missing hash.
 - **`scripts/uninstall.sh` wrapper.** Discoverable alias around `restore.sh` for users who search for "uninstall" rather than "restore".
+- **Reinstall skips insmod when `hailo_pci` is loaded.** A same-kernel reinstall used to print insmod's `File exists` error and a `WARNING: insmod hailo_pci failed` line. `install.sh` now skips insmod and says the new build's module loads at the next reboot (the loaded module, and its firmware, stay active until then), matching `hailo-preinit.sh` and `hailo-load.service`.
+- **`--check` notes the old boot-pool copy.** After an upgrade from a release that copied the image to `/usr/share/truenas/sysext-extensions/hailo.raw`, `--check` prints an informational line (not counted as a warning or failure) for that unused copy. The installer does not delete it, since that means making `/usr` writable; the next TrueNAS update drops it, and `docs/troubleshooting.md` has an optional manual removal.
 
 ## Sysext Activation on TrueNAS
 

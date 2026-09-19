@@ -19,11 +19,16 @@ set -euo pipefail
 # pass (warnings allowed), 1 if any check fails. Used by --check.
 do_check() {
     local pass=0 warn=0 fail=0
-    local mark_ok="✓" mark_warn="⚠" mark_fail="✗"
+    local mark_ok="✓" mark_warn="⚠" mark_fail="✗" mark_info="i"
     local -a status_lines=()
     local -a hint_lines=()
 
     record_pass() { status_lines+=("  ${mark_ok} $1"); pass=$((pass+1)); }
+    # Informational: neither a problem nor a pass, so not counted in the Summary.
+    record_info() {
+        status_lines+=("  ${mark_info} $1")
+        [ -n "${2:-}" ] && hint_lines+=("    → $2")
+    }
     record_warn() {
         status_lines+=("  ${mark_warn} $1"); warn=$((warn+1))
         [ -n "${2:-}" ] && hint_lines+=("    → $2")
@@ -158,6 +163,22 @@ do_check() {
                     "review full log: journalctl -b -t hailo-preinit"
             fi
         fi
+    fi
+
+    # 11. Boot-pool copy left by an older install. Releases before in-place
+    # activation copied the image under /usr on the boot pool and linked
+    # /run/extensions there. Once the link resolves to another image, nothing
+    # reads that copy, and the next TrueNAS update (a fresh boot environment)
+    # drops it. Removing it sooner means making /usr writable, which in-place
+    # activation exists to avoid, so this is reported, never acted on. The
+    # message spells the path out: the hardware-test issue quotes it verbatim.
+    local legacy_raw="/usr/share/truenas/sysext-extensions/hailo.raw"
+    local active_raw
+    active_raw=$(readlink -f /run/extensions/hailo.raw 2>/dev/null || true)
+    if [ -f "$legacy_raw" ] && [ -n "$active_raw" ] && [ -f "$active_raw" ] \
+        && [ "$active_raw" != "$(readlink -f "$legacy_raw")" ]; then
+        record_info "Unused boot-pool copy /usr/share/truenas/sysext-extensions/hailo.raw left by an older install (informational)" \
+            "nothing reads it and the next TrueNAS update removes it; optional manual removal: docs/troubleshooting.md"
     fi
 
     printf '%s\n' "${status_lines[@]}"
@@ -409,9 +430,10 @@ if [ "$CHECK_MODE" = "1" ] && [ "$DRY_RUN" = "1" ]; then
     exit 2
 fi
 
-# Every mode past --help touches privileged state: zfs readonly toggles,
-# writes under /usr, midclt, insmod. Fail fast with a clear message rather
-# than partway through after a download, firmware fetch, and unsquash.
+# Every mode past --help touches privileged state: the data pool,
+# /run/extensions, systemd-sysext, midclt, insmod. Fail fast with a clear
+# message rather than partway through after a download, firmware fetch, and
+# unsquash.
 if [ "$(id -u 2>/dev/null)" != "0" ]; then
     echo "ERROR: must run as root (use sudo)" >&2
     exit 1
@@ -891,12 +913,21 @@ if_real ldconfig
 
 # Load the kernel module (use insmod directly — /lib/modules is read-only on TrueNAS
 # so depmod can't update module deps, and modprobe can't find modules without it)
+# A reinstall on the running kernel finds hailo_pci already loaded, and insmod
+# would only fail with "File exists". The installer never unloads a live
+# module, so the loaded one stays in use: skip insmod and say when the new
+# module takes over.
 echo "Loading Hailo kernel module..."
 HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
 if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: insmod ${HAILO_KO} (if present)"
+    echo "[dry-run] would: insmod ${HAILO_KO} (if present and not already loaded)"
 elif [ -f "$HAILO_KO" ]; then
-    insmod "$HAILO_KO" || echo "WARNING: insmod hailo_pci failed (device may not be present)"
+    if [ -e /sys/module/hailo_pci ]; then
+        echo "hailo_pci already loaded, skipping insmod: this build's module loads at the next reboot"
+        echo "  If this install changed the HailoRT version, the old module and firmware stay active until that reboot."
+    else
+        insmod "$HAILO_KO" || echo "WARNING: insmod hailo_pci failed (device may not be present)"
+    fi
 else
     echo "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
 fi

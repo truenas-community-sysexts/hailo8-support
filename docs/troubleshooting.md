@@ -51,3 +51,68 @@ The PREINIT script can detect the mismatch but cannot fix it on its own:
 downloading a new `hailo.raw` requires network access, and PREINIT runs
 before the network stack is reliably up. Recovery is intentionally a
 human step.
+
+## Reinstalling while `hailo_pci` is loaded
+
+Re-running `install.sh` on the same kernel (for example a newer build for
+the kernel you are already running) finds the module loaded and prints:
+
+```
+hailo_pci already loaded, skipping insmod: this build's module loads at the next reboot
+```
+
+The installer never unloads a live module, so the loaded one stays in use
+until you reboot. If the new build changes the HailoRT version, the old
+module and firmware also stay active until then, so `hailortcli` can fail
+with a driver version mismatch or show the old firmware version. Reboot to
+switch over.
+
+## Unused boot-pool copy after upgrading from an older release
+
+Releases before in-place activation copied the image to the boot pool at
+`/usr/share/truenas/sysext-extensions/hailo.raw` and linked
+`/run/extensions/hailo.raw` to it. Current releases activate the image on
+the data pool instead, so after an upgrade the old copy (a few MB) is left
+behind and `install.sh --check` reports:
+
+```
+i Unused boot-pool copy /usr/share/truenas/sysext-extensions/hailo.raw left by an older install (informational)
+```
+
+It is not a warning or a failure. Nothing reads the file once
+`/run/extensions/hailo.raw` points at the data pool, and the next TrueNAS
+update removes it (the update installs a fresh boot environment). The
+installer leaves it alone on purpose: deleting it means making `/usr`
+writable, which in-place activation exists to avoid.
+
+### Optional manual removal
+
+Only if you want the space back before the next update. Run these blocks in
+bash (start one with `bash` if your login shell is zsh), so the `#` notes
+are read as comments. First confirm the copy is unused:
+
+```bash
+readlink /run/extensions/hailo.raw   # must print /mnt/<pool>/.config/hailo/hailo.raw
+```
+
+The removal briefly unmerges every sysext (Hailo, and NVIDIA if installed),
+the same as a reinstall does, so stop apps that use them first (for example
+Frigate). Then:
+
+```bash
+sudo systemd-sysext unmerge                   # /usr is the plain ZFS dataset again
+USR_DATASET=$(sudo zfs list -H -o name /usr)
+echo "$USR_DATASET"                           # expect boot-pool/ROOT/<version>/usr
+sudo zfs set readonly=off "$USR_DATASET"
+sudo rm -f /usr/share/truenas/sysext-extensions/hailo.raw
+sudo zfs set readonly=on "$USR_DATASET"
+sudo systemd-sysext refresh                   # re-merge every sysext in /run/extensions
+sudo ldconfig
+```
+
+The unmerge comes first because a sysext overlay mounted on `/usr` blocks
+the `readonly=off` remount (older installers unmerged first for the same
+reason). If the dataset is not the expected one, or a step fails, stop
+there: run `sudo zfs set readonly=on "$USR_DATASET"` (if it was set off) and
+`sudo systemd-sysext refresh`, then start your apps again. The leftover file
+itself is harmless.
