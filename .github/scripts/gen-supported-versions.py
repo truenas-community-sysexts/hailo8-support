@@ -268,9 +268,9 @@ def render_table(rows):
     lines = ["| Channel | Kernel | TrueNAS versions | Driver | Release |",
              "| --- | --- | --- | --- | --- |"]
     if not rows:
-        lines.append("| _none_ | — | _no data yet_ | — | — |")
+        lines.append("| _none_ | - | _no data yet_ | - | - |")
     for row in rows:
-        ker = f"`{row['kver']}`" if row["kver"] else "—"
+        ker = f"`{row['kver']}`" if row["kver"] else "-"
         if row["url"]:
             rel = f"[`{row['tag']}`]({row['url']})"
         elif row["tag"]:
@@ -281,7 +281,7 @@ def render_table(rows):
             rel = f"{pt} _(awaiting hardware-test promotion)_"
         else:
             rel = "_not built yet_"
-        drv = row["driver"] or "—"
+        drv = row["driver"] or "-"
         lines.append(f"| {row['channel']} | {ker} | {row['versions']} | {drv} | {rel} |")
     return lines
 
