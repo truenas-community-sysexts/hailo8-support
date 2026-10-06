@@ -639,9 +639,9 @@ jobs:
       # release has both"); a TrueNAS-only bump on one channel builds only that
       # channel. build.yml publishes every build as a prerelease with no
       # verified-train marker, so no installer serves it until its hardware
-      # test signs it off; preview builds additionally never promote (build.yml
-      # gives them the preview-hardware-test label, and promote.yml only adds
-      # their train's marker).
+      # test signs it off. A signed-off build becomes a full release for its
+      # own train only; preview builds carry the preview-hardware-test label
+      # and never install on a stable box.
       # ─────────────────────────────────────────────────────────────────────
       - name: Trigger stable build
         if: >-

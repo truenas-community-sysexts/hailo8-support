@@ -41,100 +41,62 @@ def decide(rel, others):
 
 K33 = "6.12.33-production+truenas"
 K91 = "6.12.91-production+truenas"
+K105 = "6.12.105-production+truenas"
+K42 = "6.18.42-production+truenas"
+K52 = "6.18.52-production+truenas"
 
 
-class KernelRanking(unittest.TestCase):
-    def test_newer_kernel_takes_latest(self):
-        res = decide(release("v25.10.4-hailo4.21.0-r3", "25.10.4", kver=K91),
-                     [release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33)])
+class BuildOrder(unittest.TestCase):
+    # Latest is the newest signed-off build on any train, by build order
+    # (the -r<N> run number), so a late sign-off never moves it backwards.
+
+    def test_newer_build_takes_latest(self):
+        res = decide(release("k6.12.105-hailo4.21.0-r46", "25.10.7", kver=K105),
+                     [release("v25.10.4-hailo4.21.0-r37", "25.10.4", kver=K91)])
         self.assertEqual(res["makeLatest"], "true")
 
-    def test_older_kernel_never_regresses_latest(self):
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33),
-                     [release("v25.10.4-hailo4.21.0-r3", "25.10.4", kver=K91)])
+    def test_older_build_signed_off_late_does_not_take_latest(self):
+        res = decide(release("v25.10.3-hailo4.21.0-r39", "25.10.3", kver=K33),
+                     [release("k6.12.105-hailo4.21.0-r46", "25.10.7", kver=K105)])
         self.assertEqual(res["makeLatest"], "false")
-
-    def test_ktag_ranks_by_encoded_kernel(self):
-        res = decide(release("k6.12.91-hailo4.21.0-r9", "25.10.4", kver=K91),
-                     [release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33)])
-        self.assertEqual(res["makeLatest"], "true")
+        self.assertEqual(res["newest"], "k6.12.105-hailo4.21.0-r46")
 
     def test_prerelease_others_cannot_hold_latest(self):
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33),
-                     [release("v25.10.4-hailo4.21.0-r3", "25.10.4", kver=K91,
+        res = decide(release("v25.10.3-hailo4.21.0-r39", "25.10.3", kver=K33),
+                     [release("k6.12.105-hailo4.21.0-r46", "25.10.7", kver=K105,
                               prerelease=True)])
         self.assertEqual(res["makeLatest"], "true")
 
-
-class SameKernelTiebreak(unittest.TestCase):
-    # A driver bump rebuilds every kernel, leaving two releases per kernel;
-    # promoting the older one must not steal Latest (the install one-liner
-    # pulls from releases/latest/download/).
-
-    def test_older_version_on_same_kernel_does_not_take_latest(self):
-        # The regression scyto simulated: the older version has the HIGHER
-        # run number (it was rebuilt later), so the version must rank first.
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33),
-                     [release("v25.10.3.1-hailo4.21.0-r1", "25.10.3.1",
-                              kver=K33)])
-        self.assertEqual(res["makeLatest"], "false")
-
-    def test_newer_version_on_same_kernel_takes_latest(self):
-        res = decide(release("v25.10.3.1-hailo4.21.0-r1", "25.10.3.1", kver=K33),
-                     [release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33)])
+    def test_tags_without_a_run_fall_back_to_publication_date(self):
+        res = decide(release("v25.04.1-hailo4.20.0", "25.04.1",
+                             published="2026-02-01T00:00:00Z"),
+                     [release("v25.04.0-hailo4.20.0", "25.04.0",
+                              published="2026-01-01T00:00:00Z")])
         self.assertEqual(res["makeLatest"], "true")
 
-    def test_vtag_does_not_displace_newer_ktag_build_on_same_kernel(self):
-        # k-tags carry no TrueNAS version; the run number breaks the tie.
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33),
-                     [release("k6.12.33-hailo4.21.0-r12", "25.10.3.1",
-                              kver=K33)])
-        self.assertEqual(res["makeLatest"], "false")
 
-    def test_ktag_displaces_older_vtag_build_on_same_kernel(self):
-        res = decide(release("k6.12.33-hailo4.21.0-r12", "25.10.3.1", kver=K33),
-                     [release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33)])
+class AnyTrain(unittest.TestCase):
+    def test_newer_preview_build_takes_latest_from_stable(self):
+        res = decide(release("k6.18.52-hailo4.21.0-r48", "27.0.0-RC.1",
+                             "Halfmoon", kver=K52),
+                     [release("k6.12.105-hailo4.21.0-r46", "25.10.7", kver=K105,
+                              trains=["25.10"])])
         self.assertEqual(res["makeLatest"], "true")
 
-    def test_same_version_newer_run_takes_latest(self):
-        res = decide(release("v25.10.3-hailo4.21.0-r9", "25.10.3", kver=K33),
-                     [release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33)])
-        self.assertEqual(res["makeLatest"], "true")
-
-    def test_same_version_older_run_does_not_take_latest(self):
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33),
-                     [release("v25.10.3-hailo4.21.0-r9", "25.10.3", kver=K33)])
+    def test_older_stable_build_does_not_displace_newer_preview(self):
+        res = decide(release("k6.12.105-hailo4.21.0-r44", "25.10.7", kver=K105),
+                     [release("k6.18.52-hailo4.21.0-r48", "27.0.0-RC.1",
+                              "Halfmoon", kver=K52, trains=["27"])])
         self.assertEqual(res["makeLatest"], "false")
+        self.assertEqual(res["newest"], "k6.18.52-hailo4.21.0-r48")
 
-
-class LegacyRanking(unittest.TestCase):
-    def test_old_ktag_does_not_displace_newer_kernel_unknown_latest(self):
-        # A k-tag carries no TrueNAS version and a release whose body lost
-        # its Target kernel row ranks by version only: no shared dimension.
-        # Publication date decides, so promoting an OLD k-tag build cannot
-        # steal Latest from a newer release with a damaged body.
-        res = decide(release("k6.12.33-hailo4.21.0-r12", "25.10.3",
-                             kver=K33, published="2026-01-10T00:00:00Z"),
-                     [release("v25.10.4-hailo4.21.0-r3", "25.10.4",
-                              published="2026-02-01T00:00:00Z")])
-        self.assertEqual(res["makeLatest"], "false")
-
-    def test_new_ktag_still_displaces_older_kernel_unknown_release(self):
-        res = decide(release("k6.12.91-hailo4.21.0-r9", "25.10.4",
-                             kver=K91, published="2026-02-01T00:00:00Z"),
-                     [release("v25.04.1-hailo4.20.0-r5", "25.04.1",
-                              published="2025-05-01T00:00:00Z")])
-        self.assertEqual(res["makeLatest"], "true")
-
-    def test_known_kernel_outranks_legacy_body(self):
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3", kver=K33),
-                     [release("v25.10.4-hailo4.21.0-r3", "25.10.4")])
-        self.assertEqual(res["makeLatest"], "true")
-
-    def test_two_legacy_releases_compare_by_version(self):
-        res = decide(release("v25.10.3-hailo4.21.0-r7", "25.10.3"),
-                     [release("v25.10.4-hailo4.21.0-r3", "25.10.4")])
-        self.assertEqual(res["makeLatest"], "false")
+    def test_unapproved_full_preview_cannot_hold_latest(self):
+        for tag, version in (("k6.18.52-hailo4.21.0-r48", "27.0.0-RC.1"),
+                             ("v26.0.0-BETA.1-hailo4.21.0-r35", "26.0.0-BETA.1"),
+                             ("k6.18.23-hailo4.21.0-r40", "26.0.0-RC1")):
+            res = decide(release("v25.10.3-hailo4.21.0-r30", "25.10.3", kver=K33),
+                         [release(tag, version, "Halfmoon", kver=K42)])
+            self.assertEqual(res["makeLatest"], "true", tag)
 
 
 if __name__ == "__main__":

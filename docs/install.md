@@ -32,7 +32,7 @@ Nothing untested is installed, on stable or preview (beta) systems. Every build 
 - its notes carry `<!-- verified-train: <train> -->` for that train. `promote.yml` writes it when the build's hardware-test issue is closed as completed; the train is the one the build was made for (from the notes header). A stable build is also promoted to a full release at that point. A preview build stays a pre-release for good; the marker alone approves it; or
 - it is a full release with no `verified-train` marker at all: promoted before per-train sign-off, so approved for every train.
 
-The **train** is the major version from 26 on (every 26.x release, betas included, is train `26`) and major.minor before that (`25.10`, `25.04`). A build must also target your exact running kernel, and come from your train (the train guard: the sysext ships userspace built against that train's base system). A stable system never installs a preview (beta) build. With no approved build for your kernel the installer stops and names the hardware-test issue that is waiting; see [troubleshooting](troubleshooting.md#no-approved-build-for-your-kernel-yet).
+The **train** is the major version from 26 on (every 27.x release, RCs included, is train `27`; TrueNAS 26 was renamed 27 at its first RC) and major.minor before that (`25.10`, `25.04`). A build must also target your exact running kernel, and come from your train (the train guard: the sysext ships userspace built against that train's base system). A stable system never installs a preview (beta) build. With no approved build for your kernel the installer stops and names the hardware-test issue that is waiting; see [troubleshooting](troubleshooting.md#no-approved-build-for-your-kernel-yet).
 
 ## Installing a Specific Version
 

@@ -3,8 +3,8 @@
 Each test closes a hardware-test issue against a canned release list and
 checks the release update and issue comment the workflow would make: a
 sign-off appends the verified-train marker for the build's train (read from
-its notes header), a stable build is also promoted as before (Andre's
-cmpRank decides Latest), and a preview build only gets the marker."""
+its notes header) and promotes the build to a full release, stable and
+preview alike; Latest goes to the newest signed-off build by build order."""
 import copy
 import unittest
 from datetime import datetime, timedelta
@@ -124,7 +124,7 @@ class StableSignOff(unittest.TestCase):
         self.assertIn("promoted", out["comments"][0])
         self.assertIn("approved it for TrueNAS train `25.10`", out["comments"][0])
 
-    def test_cmp_rank_keeps_latest_on_a_newer_kernel(self):
+    def test_latest_stays_on_a_newer_build(self):
         newer = rel("k6.12.110-hailo4.21.0-r50", "25.10.8",
                     "6.12.110-production+truenas", 50, prerelease=False)
         rels = [stable(46), newer]
@@ -132,7 +132,8 @@ class StableSignOff(unittest.TestCase):
         up = out["updates"][0]
         self.assertEqual(up["make_latest"], "false")
         self.assertIn(marker("25.10"), up["body"])
-        self.assertIn("Latest stays on the newer `kernel 6.12.110`", out["comments"][0])
+        self.assertIn("Latest stays on the newer `k6.12.110-hailo4.21.0-r50`",
+                      out["comments"][0])
 
     def test_marker_is_added_once(self):
         rels = [stable(46), stable(44, prerelease=False)]
@@ -188,19 +189,30 @@ class StableSignOff(unittest.TestCase):
 
 
 class PreviewSignOff(unittest.TestCase):
-    def test_adds_the_marker_only(self):
+    def test_promotes_like_a_stable_build(self):
         rels = [beta(47), stable(44, prerelease=False)]
         out = close(preview_issue(rels[0]["tag_name"]), rels)
         self.assertEqual(len(out["updates"]), 1, out)
         up = out["updates"][0]
-        # Body plus an explicit make_latest false: it stays a prerelease, and
-        # Latest is not touched.
-        self.assertEqual(set(up), {"owner", "repo", "release_id", "make_latest", "body"})
+        self.assertIs(up["prerelease"], False)
+        self.assertEqual(up["make_latest"], "true")  # newest build (r47)
+        self.assertEqual(up["body"].count("## Changelog"), 1)
+        self.assertTrue(up["body"].endswith(f"\n\n{marker('26')}\n"))
+        self.assertIn("approved it for TrueNAS train `26`", out["comments"][0])
+
+    def test_changelog_starts_at_the_previous_preview_release(self):
+        rels = [beta(47), stable(46, prerelease=False), beta(45, prerelease=False,
+                                                            trains=["26"])]
+        out = close(preview_issue(rels[0]["tag_name"]), rels)
+        self.assertEqual(out["compared"], ["k6.18.42-hailo4.21.0-r45...k6.18.42-hailo4.21.0-r47"])
+
+    def test_full_preview_release_without_a_marker_gets_one(self):
+        rels = [beta(47, prerelease=False)]
+        out = close(preview_issue(rels[0]["tag_name"]), rels)
+        up = out["updates"][0]
+        self.assertNotIn("prerelease", up)
         self.assertEqual(up["make_latest"], "false")
         self.assertEqual(up["body"], rels[0]["body"] + f"\n\n{marker('26')}\n")
-        self.assertEqual(out["generated"], [])
-        self.assertIn("approved it for TrueNAS train `26`", out["comments"][0])
-        self.assertIn("never promoted to Latest", out["comments"][0])
 
     def test_is_idempotent(self):
         rels = [beta(47)]
@@ -210,9 +222,9 @@ class PreviewSignOff(unittest.TestCase):
         self.assertEqual(again["updates"], [])
         self.assertIn("already approved for TrueNAS train `26`", again["comments"][0])
 
-    def test_a_preview_build_is_never_promoted_whatever_the_label(self):
-        # Mislabeled hardware-test issue: the preview-build marker, the tag
-        # or the notes header still keeps it a prerelease.
+    def test_a_mislabeled_preview_build_gets_the_preview_train(self):
+        # Mislabeled hardware-test issue: the train still comes from the
+        # notes header, so the build is approved for its preview train only.
         cases = [
             (beta(47), issue("k6.18.42-hailo4.21.0-r47", preview=True)),
             (beta(47), issue("k6.18.42-hailo4.21.0-r47")),  # header only
@@ -223,8 +235,9 @@ class PreviewSignOff(unittest.TestCase):
         for r, iss in cases:
             out = close(iss, [r])
             self.assertEqual(len(out["updates"]), 1, out)
-            self.assertNotIn("prerelease", out["updates"][0])
+            self.assertIs(out["updates"][0]["prerelease"], False)
             self.assertIn(marker("26"), out["updates"][0]["body"])
+            self.assertNotIn(marker("25.10"), out["updates"][0]["body"])
 
     def test_train_is_the_major_from_26_on(self):
         r = rel("k6.18.60-hailo4.21.0-r70", "26.1.0-RC.1", "6.18.60-production+truenas",

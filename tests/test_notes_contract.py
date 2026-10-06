@@ -158,12 +158,15 @@ class SignOffChain(unittest.TestCase):
         before, rels = self.chain("k6.18.42-hailo4.21.0-r47", "26.0.0-BETA.3",
                                   "Halfmoon", k, preview=True)
         self.assertNotEqual(before.returncode, 0)
-        self.assertTrue(rels[0]["prerelease"])
+        # A signed-off preview build is a full release like a stable one.
+        self.assertFalse(rels[0]["prerelease"])
         self.assertIn(f"\n\n{marker('26')}\n", rels[0]["body"])
         p = run_selection(rels, "26.0.0-BETA.3", k)
         self.assertEqual(p.stdout, "k6.18.42-hailo4.21.0-r47", p.stderr)
         p = run_selection(rels, "26.0.0-BETA.4", k)
         self.assertEqual(p.stdout, "k6.18.42-hailo4.21.0-r47", p.stderr)
+        # The channel gate still keeps it off a stable box on that kernel.
+        self.assertNotEqual(run_selection(rels, "26.0.0", k).returncode, 0)
 
     def test_stable_sign_off_promotes_and_approves_25_10(self):
         before, rels = self.chain("k6.12.105-hailo4.21.0-r46", "25.10.7",
