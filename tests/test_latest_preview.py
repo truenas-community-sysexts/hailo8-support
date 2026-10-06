@@ -144,6 +144,16 @@ class LatestPreview(unittest.TestCase):
         checkout = checkout[:checkout.index("- name:")]
         self.assertIn("ref: main", checkout)
 
+    def test_build_dispatches_retry(self):
+        # The bump is pushed before the dispatch, so a lost dispatch is never
+        # retried by a later run: every dispatch step must retry 5xx.
+        text = CHECK_RELEASES.read_text()
+        steps = text.split("      - name: ")
+        dispatching = [s for s in steps if "createWorkflowDispatch" in s]
+        self.assertTrue(dispatching)
+        for step in dispatching:
+            self.assertIn("retries: 4", step, step.splitlines()[0])
+
     def test_check_releases_writes_the_channel_url(self):
         text = CHECK_RELEASES.read_text()
         self.assertIn("latest-preview.py", text)
