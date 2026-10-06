@@ -156,7 +156,7 @@ class StableSignOff(unittest.TestCase):
         self.assertEqual(len(out["updates"]), 1)
         up = out["updates"][0]
         self.assertNotIn("prerelease", up)
-        self.assertNotIn("make_latest", up)
+        self.assertEqual(up["make_latest"], "false")
         self.assertEqual(up["body"], rels[0]["body"] + f"\n\n{marker('25.10')}\n")
         self.assertEqual(out["generated"], [])
 
@@ -193,8 +193,10 @@ class PreviewSignOff(unittest.TestCase):
         out = close(preview_issue(rels[0]["tag_name"]), rels)
         self.assertEqual(len(out["updates"]), 1, out)
         up = out["updates"][0]
-        # Body only: it stays a prerelease, and Latest is not touched.
-        self.assertEqual(set(up), {"owner", "repo", "release_id", "body"})
+        # Body plus an explicit make_latest false: it stays a prerelease, and
+        # Latest is not touched.
+        self.assertEqual(set(up), {"owner", "repo", "release_id", "make_latest", "body"})
+        self.assertEqual(up["make_latest"], "false")
         self.assertEqual(up["body"], rels[0]["body"] + f"\n\n{marker('26')}\n")
         self.assertEqual(out["generated"], [])
         self.assertIn("approved it for TrueNAS train `26`", out["comments"][0])

@@ -212,9 +212,11 @@ jobs:
             const marker = `\n\n<!-- verified-train: ${train} -->\n`;
             const approvedNote = `approved it for TrueNAS train \`${train}\`, so \`get.sh\` installs it on train ${train} boxes running its kernel`;
 
+            // make_latest is explicit on the marker-only updates: GitHub's
+            // update endpoint defaults it to true when left out.
             if (preview) {
               await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
-                body: (release.body || '') + marker });
+                make_latest: 'false', body: (release.body || '') + marker });
               await comment(`Verified: ${approvedNote}. It is a TrueNAS preview (${bodyVer || tag}) build, so it stays a pre-release and is never promoted to Latest.`);
               core.info(`Approved preview build ${tag} for train ${train} (marker only).`);
               return;
@@ -223,7 +225,7 @@ jobs:
             if (!release.prerelease) {
               // Already promoted and approved for other trains: add this one.
               await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
-                body: (release.body || '') + marker });
+                make_latest: 'false', body: (release.body || '') + marker });
               await comment(`Verified: ${approvedNote}.`);
               core.info(`Approved ${tag} for train ${train} (already a full release).`);
               return;
