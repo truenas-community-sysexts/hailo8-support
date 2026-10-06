@@ -40,6 +40,7 @@ Kernel matching is scoped to your TrueNAS train (25.04, 25.10, 26): the sysext a
 | Stable | `6.12.91-production+truenas` | 25.10.4 | HailoRT 4.21.0 | [`v25.10.4-hailo4.21.0-r37`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/v25.10.4-hailo4.21.0-r37) |
 | Stable | `6.12.33-production+truenas` | 25.10.0 - 25.10.3.1 | HailoRT 4.21.0 | [`v25.10.3-hailo4.21.0-r39`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/v25.10.3-hailo4.21.0-r39) |
 | Stable | `6.12.15-production+truenas` | 25.04.0 - 25.04.2.6 | - | _not built yet_ |
+| Preview (beta) | `6.18.52-production+truenas` | 27.0.0-RC.1 | HailoRT 4.21.0 | [`k6.18.52-hailo4.21.0-r48`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/k6.18.52-hailo4.21.0-r48) _(awaiting hardware test)_ |
 | Preview (beta) | `6.18.42-production+truenas` | 26.0.0-BETA.3 | HailoRT 4.21.0 | [`k6.18.42-hailo4.21.0-r47`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/k6.18.42-hailo4.21.0-r47) |
 | Preview (beta) | `6.18.23-production+truenas` | 26.0.0-BETA.2 | HailoRT 4.21.0 | [`v26.0.0-BETA.2-hailo4.21.0-r38`](https://github.com/truenas-community-sysexts/hailo8-support/releases/tag/v26.0.0-BETA.2-hailo4.21.0-r38) |
 <!-- END supported-versions -->
