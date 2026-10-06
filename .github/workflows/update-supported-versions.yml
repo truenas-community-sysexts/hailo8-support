@@ -56,6 +56,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           token: ${{ steps.app-token.outputs.token }}
+          # main's tip by name. A `release` event otherwise checks out the
+          # release's tag: a detached, older commit that the README commit
+          # below can neither push nor rebase, so every release-triggered
+          # run failed. Runs are serialized (concurrency above), so each one
+          # also sees the README commit of the run before it.
+          ref: main
 
       - name: Update kernel map
         run: python3 .github/scripts/gen-kernel-map.py .github/kernel-map.json
