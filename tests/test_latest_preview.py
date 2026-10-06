@@ -137,6 +137,13 @@ class LatestPreview(unittest.TestCase):
                               current="26.0.0-BETA.3")
         self.assertEqual(out["higher"], "false")
 
+    def test_check_releases_reads_mains_tip(self):
+        # A queued run must not re-detect what the run before it bumped.
+        text = CHECK_RELEASES.read_text()
+        checkout = text[text.index("uses: actions/checkout"):]
+        checkout = checkout[:checkout.index("- name:")]
+        self.assertIn("ref: main", checkout)
+
     def test_check_releases_writes_the_channel_url(self):
         text = CHECK_RELEASES.read_text()
         self.assertIn("latest-preview.py", text)
