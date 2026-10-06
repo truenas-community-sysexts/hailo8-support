@@ -981,8 +981,8 @@ jobs:
           # "publish straight to Latest" option: a full release with no
           # marker counts as approved for every train (the grandfather rule
           # for releases promoted before per-train sign-off), so it would
-          # reach every box untested. Preview builds stay prereleases for
-          # good; a stable build is promoted by its sign-off.
+          # reach every box untested. A build, stable or preview, is
+          # promoted by its sign-off.
           PUBLISH_ARGS=(-F draft=false -F prerelease=true)
           # Retry the publish PATCH: a transient API failure here would
           # otherwise strand an invisible draft with attached assets, no
@@ -1029,17 +1029,17 @@ jobs:
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             const releaseUrl = `${repoUrl}/releases/tag/${tag}`;
 
-            // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
-            // channel. Those builds must NEVER be promoted to Latest, so they
-            // get a distinct label: closing their issue as completed only
-            // approves the build for its train (promote.yml adds the
-            // verified-train marker), and it stays a pre-release. Classified
-            // once, by the publish step; this step must agree with how the
-            // release was actually published.
+            // A pre-release TrueNAS target (BETA/RC) is the preview channel.
+            // Its builds get a distinct label so testers know which kind of
+            // box the issue needs. Closing either kind as completed promotes
+            // the build to a full release for its own train (promote.yml); the
+            // installers still never put a preview build on a stable box.
+            // Classified once, by the publish step; this step must agree with
+            // how the release was actually published.
             const isPreview = process.env.IS_PREVIEW === 'true';
             const label = isPreview ? 'preview-hardware-test' : 'hardware-test';
             const labelDescription = isPreview
-              ? 'Preview (TrueNAS beta) build verification; approves it for its train, never promoted to Latest'
+              ? 'Preview (TrueNAS beta/RC) build awaiting hardware verification'
               : 'Auto-build awaiting hardware verification';
             // Title: what to test | on what | which build. The tag goes last,
             // verbatim: the duplicate check below matches on it. The kernel
@@ -1108,16 +1108,16 @@ jobs:
             const logFileNote = `\`hailortcli\` may also print \`Cannot create log file hailort.log\`: harmless, the installer's own root run of hailortcli left a root-owned \`hailort.log\` in this directory.`;
 
             const intro = isPreview
-              ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. No system installs it until this test signs it off. It stays a pre-release permanently and is never promoted to Latest, so stable installs are unaffected.`
+              ? `An auto-build published a new **TrueNAS preview (beta/RC)** release that needs hardware verification. No system installs it until this test signs it off. Signing it off makes it a full release for this train only; stable systems never install a preview build.`
               : `An auto-build published a new stable release that needs hardware verification before it is promoted. Until then it is a pre-release, so neither \`releases/latest\` nor the one line installer (\`get.sh\`) serves it.`;
 
             const signOff = isPreview
               ? [
-                  `- **Works:** close this issue as **completed**. That approves [\`${tag}\`](${releaseUrl}) for this TrueNAS train, so the one line installer (\`get.sh\`) installs it on ${train} systems running kernel \`${kver}\`. The release stays a pre-release and is never promoted to Latest.`,
+                  `- **Works:** close this issue as **completed**. That promotes [\`${tag}\`](${releaseUrl}) to a full release, appends the changelog and approves it for this TrueNAS train, so the one line installer (\`get.sh\`) installs it on ${train} systems running kernel \`${kver}\`; other trains never receive it. It becomes Latest if it is the newest signed-off build on any train (by build order).`,
                   `- **Broken:** close it as **not planned**. Nothing is approved, so no system installs it.`,
                 ]
               : [
-                  `- **Works:** close this issue as **completed**. That promotes [\`${tag}\`](${releaseUrl}) to a full release, appends the changelog and approves it for this TrueNAS train, so the one line installer (\`get.sh\`) installs it on ${train} systems running kernel \`${kver}\`. It becomes Latest only if it outranks the current Latest (a newer kernel, or a newer build of the same kernel).`,
+                  `- **Works:** close this issue as **completed**. That promotes [\`${tag}\`](${releaseUrl}) to a full release, appends the changelog and approves it for this TrueNAS train, so the one line installer (\`get.sh\`) installs it on ${train} systems running kernel \`${kver}\`. It becomes Latest if it is the newest signed-off build on any train (by build order).`,
                   `- **Broken:** close it as **not planned**, so nothing is promoted, and delete the release: an unpromoted build keeps counting as pending coverage for its kernel and holds back a rebuild.`,
                 ];
 

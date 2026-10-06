@@ -242,11 +242,13 @@ class Commands(unittest.TestCase):
             for q in quoted:
                 self.assertIn(q, text)
 
-    def test_sign_off_matches_the_channel(self):
-        self.assertIn("promotes", render_issue(**STABLE)["body"])
+    def test_sign_off_promotes_on_both_channels(self):
+        stable = render_issue(**STABLE)["body"]
         preview = render_issue(**PREVIEW)["body"]
-        self.assertIn("never promoted", preview)
-        self.assertNotIn("promotes", preview)
+        for body in (stable, preview):
+            self.assertIn("promotes", body)
+            self.assertIn("newest signed-off build on any train", body)
+        self.assertIn("stable systems never install a preview build", preview)
 
     def test_sign_off_says_it_approves_the_build_for_its_train(self):
         # promote.yml turns a completed close into the train's
