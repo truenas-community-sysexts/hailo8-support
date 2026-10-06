@@ -6,22 +6,26 @@ name: Promote release on hardware-test sign-off
 # with a `<!-- release-tag: X -->` marker, so this is independent of
 # issue-title formatting. The train is the one the build was made for, read
 # from the "for TrueNAS SCALE <version>" header build.yml writes into the
-# release notes: the major version from 26 on (every 26.x release, betas
-# included, is train 26), major.minor before that (25.10). When an issue is
+# release notes: the major version from 26 on (every 27.x release, RCs
+# included, is train 27), major.minor before that (25.10). When an issue is
 # closed as completed:
 #   - `<!-- verified-train: KEY -->` is appended to the release notes, once.
 #     get.sh and install.sh install a build on a train only when its notes
 #     carry that train's marker, or when it is a full release with no marker
 #     at all (promoted before per-train sign-off, grandfathered);
-#   - a stable build is also promoted, as before: flipped from prerelease to
-#     a full release, a changelog appended (GitHub's PR-based auto-notes + a
-#     commit list, since most changes here land as direct pushes that
-#     PR-notes miss), and marked Latest when it outranks the current Latest
-#     (cmpRank below). Marker, flip and changelog go in ONE update: a full
-#     release without the marker would count as approved for every train,
-#     even for a moment;
-#   - a preview build only gets the marker. It stays a prerelease forever and
-#     is never promoted to Latest.
+#   - the prerelease becomes a full release, stable and preview builds
+#     alike: a build that passed a hardware test is a release, whichever
+#     train it was tested on. A changelog is appended (GitHub's PR-based
+#     auto-notes + a commit list, since most changes here land as direct
+#     pushes that PR-notes miss), counted from the previous full release of
+#     the same channel (stable or preview);
+#   - it is marked Latest when it is the newest signed-off build on any
+#     train, by build order (decideMakeLatest below), so signing off an
+#     older build late never moves Latest backwards.
+#   Marker, flip and changelog go in ONE update: a full release without the
+#   marker would count as approved for every train, even for a moment.
+#   Stable boxes still never install a preview build: the installers refuse
+#   BETA/RC builds there whatever the flag says.
 # Closed as "not planned": no change.
 #
 # Editing a release does not touch the protected branch, so the default
@@ -64,76 +68,40 @@ jobs:
             const bodyVerOf = (r) => (((r.body || '').match(/for TrueNAS SCALE (\S+)/) || [])[1] || '');
             const previewRelease = (r) => previewVer(r.tag_name) || previewVer(bodyVerOf(r));
 
-            // Releases rank by the kernel they target: k-tags encode it
-            // directly, v-tag releases record it in their Target kernel body
-            // row. A release with an unknown kernel (legacy body) ranks below
-            // any known kernel. Two releases on the SAME kernel (a driver
-            // bump rebuilds every kernel, leaving two per kernel) rank by
-            // TrueNAS version when both tags carry one, then by run number
-            // (which also orders k-tags, which carry no version). The run
-            // number alone cannot come first: an older version rebuilt later
-            // has a HIGHER run than the Latest it must not displace. This
-            // keeps the invariant across the tag-scheme migration: promoting
-            // an older build never regresses Latest, whatever scheme the
-            // newer build uses. A k-tag measured against a version-only rank
-            // shares no dimension at all; publication date decides there.
-            const numOf = (s) => {
-              const m = (s || '').match(/^(\d+(?:\.\d+)*)/);
-              return m ? m[1].split('.').map(Number) : null;
-            };
+            // Latest is the newest signed-off build on any train, by build
+            // order: the run number build.yml puts at the end of every tag
+            // (-r<N>, from one monotonic counter for stable and preview
+            // builds alike), then publication date for tags without one. A
+            // build signed off late (an older kernel, or a 25.10 build after
+            // a 27 one) therefore never moves Latest backwards.
             const rankOf = (r) => {
-              const t = r.tag_name || '';
-              let kernel = null;
-              const km = t.match(/^k(\d+(?:\.\d+)*)-/);
-              if (km) kernel = km[1].split('.').map(Number);
-              if (!kernel) kernel = numOf(((r.body || '').match(/Target kernel\s*\|\s*`([^`]+)`/) || [])[1]);
-              const vm = t.match(/^v(\d+(?:\.\d+)*)-/);
-              const ver = vm ? vm[1].split('.').map(Number) : null;
-              const rm = t.match(/-r(\d+)$/);
-              const run = rm ? Number(rm[1]) : 0;
-              const date = Date.parse(r.published_at || r.created_at || '') || 0;
-              return (kernel || ver) ? { kernel, ver, run, date } : null;
-            };
-            const cmpNum = (a, b) => {
-              const n = Math.max(a.length, b.length);
-              for (let i = 0; i < n; i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
-              return 0;
+              const rm = (r.tag_name || '').match(/-r(\d+)$/);
+              return {
+                run: rm ? Number(rm[1]) : 0,
+                date: Date.parse(r.published_at || r.created_at || '') || 0,
+              };
             };
             const cmpRank = (a, b) => {
-              if (a.kernel && b.kernel) {
-                const dk = cmpNum(a.kernel, b.kernel);
-                if (dk) return dk;
-                if (a.ver && b.ver) {
-                  const dv = cmpNum(a.ver, b.ver);
-                  if (dv) return dv;
-                }
-                return a.run - b.run;
-              }
-              if (a.kernel || b.kernel) {
-                // kernel-only vs version-only shares no dimension: date
-                // decides (see comment above); otherwise known kernel wins.
-                if (!(a.ver && b.ver)) {
-                  const dd = a.date - b.date;
-                  if (dd) return dd;
-                }
-                return a.kernel ? 1 : -1;
-              }
-              return cmpNum(a.ver || [], b.ver || []) || (a.run - b.run);
+              if (a.run && b.run && a.run !== b.run) return a.run - b.run;
+              return a.date - b.date;
             };
+            // Signed off: a full release that some train installs. That is
+            // one with a verified-train marker, or a non-preview full release
+            // without one (promoted before per-train sign-off). A preview
+            // build marked full by hand without a marker is approved for no
+            // train, so it never holds Latest.
+            const signedOff = (r) => !r.draft && !r.prerelease &&
+              (verifiedTrains(r).size > 0 || !previewRelease(r));
             const decideMakeLatest = (rel, others) => {
-              const thisVer = rankOf(rel);
-              let newest = thisVer;  // rel is becoming non-prerelease
+              const thisRank = rankOf(rel);  // rel is becoming a full release
+              let newest = { rank: thisRank, tag: rel.tag_name };
               for (const r of others) {
-                // Betas / unverified builds can't be Latest. The prerelease
-                // flag alone is not trusted here: a beta mispublished as a
-                // full release would outrank every stable version and wedge
-                // makeLatest=false for all later stable promotions.
-                if (r.prerelease || previewRelease(r)) continue;
+                if (!signedOff(r)) continue;
                 const v = rankOf(r);
-                if (v && (!newest || cmpRank(v, newest) > 0)) newest = v;
+                if (cmpRank(v, newest.rank) > 0) newest = { rank: v, tag: r.tag_name };
               }
-              const makeLatest = (thisVer && newest && cmpRank(thisVer, newest) >= 0) ? 'true' : 'false';
-              return { makeLatest, newest };
+              const makeLatest = cmpRank(thisRank, newest.rank) >= 0 ? 'true' : 'false';
+              return { makeLatest, newest: newest.tag };
             };
             // Train key of a TrueNAS version, '' when it has none. Same rule
             // as get.sh/install.sh's truenas_train_key and train_key: the
@@ -187,12 +155,11 @@ jobs:
               return;
             }
 
-            // A TrueNAS preview (beta/RC) build is never promoted: that would
-            // put a beta build on Latest. The label says so, and so does the
-            // tag (v-tags), the preview-build marker build.yml writes next to
-            // release-tag (k-tags carry no BETA marker), or the notes header.
-            // Any one of them keeps the release a prerelease; the sign-off
-            // then only adds the train's marker.
+            // A TrueNAS preview (beta/RC) build is promoted like a stable one;
+            // the flag only matters for a full release without a marker
+            // below. The label says so, and so does the tag (v-tags), the
+            // preview-build marker build.yml writes next to release-tag
+            // (k-tags carry no BETA marker), or the notes header.
             const pm = (issue.body || '').match(/<!--\s*preview-build:\s*(\S+?)\s*-->/);
             const preview = labels.includes('preview-hardware-test') || previewVer(tag) ||
               Boolean(pm && pm[1] === 'true') || previewVer(bodyVer);
@@ -212,18 +179,11 @@ jobs:
             const marker = `\n\n<!-- verified-train: ${train} -->\n`;
             const approvedNote = `approved it for TrueNAS train \`${train}\`, so \`get.sh\` installs it on train ${train} boxes running its kernel`;
 
-            // make_latest is explicit on the marker-only updates: GitHub's
-            // update endpoint defaults it to true when left out.
-            if (preview) {
-              await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
-                make_latest: 'false', body: (release.body || '') + marker });
-              await comment(`Verified: ${approvedNote}. It is a TrueNAS preview (${bodyVer || tag}) build, so it stays a pre-release and is never promoted to Latest.`);
-              core.info(`Approved preview build ${tag} for train ${train} (marker only).`);
-              return;
-            }
-
             if (!release.prerelease) {
-              // Already promoted and approved for other trains: add this one.
+              // Already promoted and approved for other trains (or a preview
+              // build marked full without a marker, which no train installs):
+              // add this one. make_latest is explicit: GitHub's update
+              // endpoint defaults it to true when left out.
               await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
                 make_latest: 'false', body: (release.body || '') + marker });
               await comment(`Verified: ${approvedNote}.`);
@@ -231,14 +191,15 @@ jobs:
               return;
             }
 
-            // Previous release (by created_at) bounds the changelog range.
-            // Anchor only to promoted stable releases: an interleaved BETA
-            // tag or unpromoted prerelease would bound the range at the wrong
-            // release and publish an empty or wrong commit list.
+            // Previous release (by created_at) bounds the changelog range:
+            // the previous full release of the same channel. A stable and a
+            // preview build often come from the same commit, so anchoring a
+            // stable changelog at a preview build (or the reverse) would list
+            // nothing; an unpromoted prerelease is no anchor either.
             const rels = (await github.rest.repos.listReleases({ owner, repo, per_page: 100 })).data
               .filter(r => r.id !== release.id && !r.draft)
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-            const prev = rels.find(r => !r.prerelease && !previewRelease(r) &&
+            const prev = rels.find(r => !r.prerelease && previewRelease(r) === preview &&
               new Date(r.created_at) <= new Date(release.created_at));
 
             // GitHub's PR-based auto-notes.
@@ -266,8 +227,8 @@ jobs:
             if (commits) changelog += `\n### Commits\n${commits}\n`;
             if (!prNotes && !commits) changelog += '\n_Initial release._\n';
 
-            // Newest-stable decision: rationale sits with decideMakeLatest
-            // above. rels = all other non-draft releases.
+            // Latest decision: rationale sits with decideMakeLatest above.
+            // rels = all other non-draft releases.
             const { makeLatest, newest } = decideMakeLatest(release, rels);
 
             // Flip, changelog and marker in one update (see the top of file).
@@ -277,6 +238,6 @@ jobs:
 
             const latestNote = makeLatest === 'true'
               ? 'and set it as the latest release'
-              : `as a full release (Latest stays on the newer \`${newest ? (newest.kernel ? 'kernel ' + newest.kernel.join('.') : newest.ver.join('.')) : ''}\`)`;
+              : `as a full release (Latest stays on the newer \`${newest}\`)`;
             await comment(`Verified: promoted ${link} ${latestNote}, appended the changelog, and ${approvedNote}.`);
             core.info(`Promoted ${tag} (make_latest=${makeLatest}) and approved it for train ${train}.`);

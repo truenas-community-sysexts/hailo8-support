@@ -17,9 +17,9 @@ This sysext builds the `hailo_pci` kernel module from the **`hailo8` branch** of
 
 ### Supported TrueNAS versions
 
-Builds come in two channels: **Stable** (TrueNAS releases; a build is promoted to a full release once verified) and **Preview** (TrueNAS 27 RC, published as a **pre-release** for good: experimental, not for production).
+Builds come in two channels: **Stable** (TrueNAS releases) and **Preview** (TrueNAS 27 RC: experimental, not for production). On both, a build becomes a full release once its hardware test passes, and GitHub's **Latest** is the newest build that passed one, on any train.
 
-**Nothing untested is installed.** Every build starts as a pre-release with a hardware-test issue, and the installer only installs a build that a hardware test approved for your TrueNAS train, on stable and preview systems alike. The train is the major version from 26 on (every 26.x release, betas included, is train 26) and major.minor before that (25.10). A build signed off on 26 is not thereby approved for 25.10, and the other way round. Releases promoted before per-train sign-off count as approved.
+**Nothing untested is installed.** Every build starts as a pre-release with a hardware-test issue, and the installer only installs a build that a hardware test approved for your TrueNAS train, on stable and preview systems alike. The train is the major version from 26 on (every 27.x release, RCs included, is train 27; TrueNAS 26 was renamed 27 at its first RC) and major.minor before that (25.10). A build signed off on 27 is not thereby approved for 25.10, and the other way round, and a stable system never installs a preview build. Releases promoted before per-train sign-off count as approved.
 
 The table below is generated from the TrueNAS kernel map and this repo's **actual published releases**, so it lists every known stable kernel, not just the ones with a build. A row with a linked release is installable right now; a row without one is not, so check back after the daily build, or [build it yourself](docs/build.md).
 

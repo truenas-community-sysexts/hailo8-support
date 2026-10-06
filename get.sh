@@ -211,9 +211,9 @@ def preview_release(release):
 # when a hardware test on a train signs the build off. A release with a line
 # for this train is approved here; lines for other trains only are not. A
 # full release with no line at all predates per-train sign-off and is
-# grandfathered. Nothing else qualifies: there is no fallback to an
-# unverified build, on stable or preview boxes (preview builds stay
-# prereleases, so only their line approves them).
+# grandfathered unless it is a preview build. Nothing else qualifies: there
+# is no fallback to an unverified build, on stable or preview boxes (a
+# preview build is approved only by its line, full release or not).
 vt_re = re.compile(r'^[ \t]*<!--\s*verified-train:\s*([^\s>]+?)\s*-->', re.M)
 def verified_trains(release):
     return set(vt_re.findall(release.get('body') or ''))
